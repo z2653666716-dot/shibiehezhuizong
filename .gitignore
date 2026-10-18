@@ -1,0 +1,13 @@
+# 本文件将本机运行环境、临时文件和生成结果排除在 Git 源码记录之外。
+envs/
+work/
+certs/
+outputs/
+offline_pkgs/
+data/clips/
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/

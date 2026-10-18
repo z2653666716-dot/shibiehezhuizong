@@ -1,0 +1,17 @@
+# 本文件列出 ViTrack 直接使用的依赖，供 setup_env.ps1 安装。
+# torch 与 torchvision 保持对应版本；GPU 构建由脚本在需要时从官方 CUDA 源安装。
+torch==2.9.1
+torchvision==0.24.1
+ultralytics>=8.3.0,<9
+# ByteTrack 的轨迹匹配需要 lap，提前安装以免运行跟踪时再自动联网。
+lap>=0.5.12,<1
+fastapi>=0.115,<1
+uvicorn[standard]>=0.34,<1
+python-multipart>=0.0.20,<1
+python-dotenv>=1.1,<2
+opencv-python>=4.11,<5
+numpy>=2.0,<3
+pillow>=11,<13
+cryptography>=45,<49
+pytest>=8.3,<10
+httpx>=0.28,<1
