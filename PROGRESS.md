@@ -575,6 +575,14 @@
 
 ## 后续功能待验收
 
+- P4 实现与证据：本地官方 MobileNetV3-Small 权重 SHA256 前缀 047dcff4 校验通过，未使用随机初始化冒充预训练。
+  reid.py 提供576维外观+128维HSV（8×4×4）融合与注册翻转，gallery.py 提供多模板和第一/第二名差距，会话完成EMA、连续确认、反向解绑、同一身份唯一可见绑定。
+  原文 HSV 16×8×8 与128维互相矛盾，明确采用8×4×4，不改原方案文档。
+  pytest tests/test_reid.py tests/test_lock.py tests/test_tracking_flow.py tests/test_interaction.py：9 passed、1 warning，44.15秒。
+  公开bus图裁剪诊断得到16组亮度增强同人对、6组异人对；0.65门槛接受了其中5组异人对，不能照用为可靠默认。
+  下一改动采用更保守的0.80默认高阈值，保持0.45反向阈值；这不是实拍标定结果，不修改检测门槛或重启衣物优化。
+  calibrate_reid.py 已实际输出 outputs/reid/public_diagnostic.json、CSV和分布图，production_calibrated=false；人工标注不足时禁止自动写入生产门槛。
+
 - 2026-10-18 连续开发：用户明确要求“直接实现所有功能”，本轮不再按三步暂停。
 - P3 功能实现：新增 session.py 与 interaction.js，完成独立会话凭据、5 次稳定观测检查、长按 600ms/短按/右键/L、镜像命中、身份条和删除。
   锁定与跟踪检查：pytest tests/test_lock.py tests/test_tracker.py tests/test_tracking_flow.py tests/test_interaction.py，12 passed、1 warning，16.21 秒。

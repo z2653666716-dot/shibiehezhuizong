@@ -23,6 +23,7 @@ from .detector import Detector
 from .schemas import Box, ErrorResponse, FrameMessage, FrameResult
 from .tracker import Tracker
 from .session import VideoSession, SessionError
+from .reid import FeatureExtractor
 
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ class Pipeline:
         self.latest_result: FrameResult | None = None
         self.processed_frames = 0
         self.sessions = {}
+        self.extractor = None
 
     def create_tracker(self) -> Tracker:
         """无输入，输出新的会话跟踪器；路由为每条浏览器连接或一次 IP 采集创建一个。"""
@@ -136,10 +138,14 @@ class Pipeline:
                     Box.from_detection(item, width, height) for item in detections
                 ]
                 if isinstance(tracker, VideoSession):
-                    tracker.seq = seq
+                    if self.extractor is None:
+                        self.extractor = FeatureExtractor(self.config)
+                    tracker.extractor = self.extractor
+                    boxes = tracker.process(frame, seq)
                 result = FrameResult(seq=seq, boxes=boxes,
                                      session_id=getattr(tracker, "token", None),
-                                     identities=tracker.summaries() if isinstance(tracker, VideoSession) else [])
+                                     identities=tracker.summaries() if isinstance(tracker, VideoSession) else [],
+                                     events=tracker.events if isinstance(tracker, VideoSession) else [])
             except Exception as error:
                 logger.exception("检测、跟踪或结果转换失败")
                 raise PipelineError("INFERENCE_FAILED", "目标检测失败，请检查服务日志") from error

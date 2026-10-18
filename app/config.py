@@ -49,18 +49,21 @@ class AppConfig(BaseModel):
     # 以下参数留给后续重识别与录制；基础帧间跟踪已由 tracker.py 接入。
     reid_model: Literal["mobilenet_v3_small", "color_histogram", "osnet_x0_25"] = "mobilenet_v3_small"
     reid_ema: float = Field(default=0.9, ge=0, lt=1)
-    reid_tau_high: float = Field(default=0.65, ge=0, le=1)
+    reid_tau_high: float = Field(default=0.80, ge=0, le=1)
     reid_tau_low: float = Field(default=0.45, ge=0, le=1)
     reid_margin: float = Field(default=0.05, ge=0, le=1)
     reid_confirm_frames: int = Field(default=3, ge=1)
     reid_max_templates: int = Field(default=5, ge=1)
     reid_w_appear: float = Field(default=0.85, ge=0, le=1)
     reid_w_color: float = Field(default=0.15, ge=0, le=1)
+    reid_weights: Path = Path("weights/mobilenet_v3_small-047dcff4.pth")
+    identity_limit: int = Field(default=20, ge=1, le=100)
+    allow_media_save: bool = False
     jpeg_quality: float = Field(default=0.65, ge=0, le=1)
     max_side: int = Field(default=640, ge=32, le=2048)
     record_fps: int = Field(default=15, ge=1, le=60)
 
-    @field_validator("https_cert", "https_key", "det_model", mode="before")
+    @field_validator("https_cert", "https_key", "det_model", "reid_weights", mode="before")
     @classmethod
     def resolve_project_path(cls, value: object) -> Path:
         """输入文件路径，输出绝对路径；由 Pydantic 在字段转换前自动调用。

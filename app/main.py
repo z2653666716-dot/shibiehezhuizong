@@ -449,8 +449,10 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             "https": {"cert_file_present": settings.https_cert.is_file(),
                       "key_file_present": settings.https_key.is_file()},
             "mirror_config_present": (PROJECT_ROOT / "scripts/check_mirrors.ps1").is_file(),
-            "logs_url": "/api/logs", "stage": "P3",
+            "logs_url": "/api/logs", "stage": "P4",
             "tracking": {"method": "ByteTrack", "scope": "per_video_session"},
+            "reid": {"model": settings.reid_model, "high_threshold": settings.reid_tau_high,
+                     "local_weights_present": settings.reid_weights.is_file(), "calibrated": False},
         })
 
     @application.get("/api/ipcam/status")
