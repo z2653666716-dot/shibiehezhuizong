@@ -586,6 +586,7 @@
 - 检查时当前分支main，未配置任何Git远程仓库，系统未找到gh命令。用户随后指定 https://github.com/z2653666716-dot/shibiehezhuizong.git；只读检查确认为公开空仓库，没有已有分支。准备将本次已通过检查的版本保存到main和v0.2.1-baseline标签，人脸实验使用feature/face-assisted-reid独立分支；实际是否上传以Git远程校验为准，严禁将用户实拍或特征上传GitHub。
 - 更新源码包后，scripts/verify_package.py 独立解压核对78份文件摘要，启动真实YOLO/MobileNet模型，公开样例检出4人，锁定接口与绿框状态、禁止录制及静态资源检查全部通过，临时服务已退出。现有项目环境被复用，不冒充全新依赖安装。输出位于outputs/delivery，包内只有源码、允许分发的权重与明确列出的公开样例。
 - 已有服务为此前启动进程，不会因修改源码自动更新；用户在原启动终端Ctrl+C，再重跑原命令并刷新手机即可保留当前热点与证书配置。本轮未停止旧服务、未访问摄像头。
+- GitHub交付补记：本地基线提交7777faf，源码包的78份文件和运行检查均对应该版本。首次推送main被Git拒绝；fetch发现远程已有初始化README（8172974），因此保留远程main不合并、不覆盖。已实际成功推送baseline/single-target-v0.2.1、feature/face-assisted-reid两个分支及v0.2.1-baseline标签；远程引用已核对。当前切换到feature/face-assisted-reid，仅补记交付情况，尚无人脸算法改动。最新修复的数值报告为outputs/acceptance/single_target_report.json；旧P7性能结果保留为历史，不冒充修复后复测。
 
 ## 后续功能待验收
 
