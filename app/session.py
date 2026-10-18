@@ -1,5 +1,5 @@
-"""?????????????????????? Pipeline ?????
-????????????????/??????????????
+"""一路视频的短时轨迹、长期身份与当前内存帧，由 Pipeline 串行调用。
+身份库在轨迹丢失后保留，视频停止或断开后清空；不自动保存媒体。
 """
 from dataclasses import dataclass
 from secrets import token_urlsafe
@@ -18,7 +18,7 @@ from .recorder import Recorder
 
 
 class SessionError(ValueError):
-    """?????????????????????"""
+    """向接口提供可以直接显示的错误码与中文提示。"""
     def __init__(self, code, message):
         super().__init__(message)
         self.code, self.message = code, message
@@ -26,7 +26,7 @@ class SessionError(ValueError):
 
 @dataclass
 class Observation:
-    """??????????EMA ????????????????"""
+    """一条轨迹的连续观测、EMA 特征与候选计数，不保存历史画面。"""
     hits: int = 0
     last_frame: int = 0
     identity_id: str | None = None
@@ -37,7 +37,7 @@ class Observation:
 
 
 class VideoSession:
-    """????/????????????????????????"""
+    """输入检测、帧与控制请求，输出带身份状态的框、身份条和事件。"""
 
     def __init__(self, config, extractor=None):
         self.config, self.extractor = config, extractor
@@ -58,7 +58,7 @@ class VideoSession:
         self.event_path = PROJECT_ROOT / "outputs/events" / ("tracking_" + uuid4().hex + ".jsonl")
 
     def update(self, detections, width, height):
-        """??????????????????????????????"""
+        """输入当前检测与尺寸，输出原始跟踪框；空帧也推进失踪生命周期。"""
         if self.size != (width, height):
             self.observations.clear()
             self.size = (width, height)
@@ -79,15 +79,15 @@ class VideoSession:
         return self.boxes
 
     def process(self, frame, seq):
-        """?? BGR ????????????????????????????
-        ??????????????????????????????????
+        """输入 BGR 帧与序号，批量提取特征、匹配、反向校验，输出身份化的框。
+        未绑定轨迹逐帧提特征，绑定后每三帧刷新，整个批次只前向一次神经网络。
         """
         self.frame, self.seq = frame, seq
         self.events, self.pending_events = self.pending_events, []
         crops, keys = [], []
         for box in self.boxes:
             if box.cls != 0 or box.track_id is None:
-                continue  # ??????????????????????
+                continue  # 行人外观编码器不能用来声称识别任意物体身份。
             track = self.observations[box.track_id]
             if track.identity_id is None or self.frame_count % 3 == 0 or track.feature is None:
                 crop = crop_target(frame, box.xyxy)
@@ -102,7 +102,7 @@ class VideoSession:
                 track.feature = self.extractor.smooth(track.feature, feature)
         visible = {box.track_id for box in self.boxes if box.track_id is not None}
         claimed = set()
-        # ?????????????????????????????
+        # 当前可见绑定有优先权，不允许另一条相似轨迹占据同一个身份。
         for key in sorted(visible):
             track = self.observations[key]
             if track.identity_id not in self.gallery.items or track.identity_id in claimed:
@@ -134,7 +134,7 @@ class VideoSession:
             if box.cls == 0 and track is not None and track.feature is not None:
                 if track.identity_id:
                     similarity = self.gallery.score(track.feature, track.identity_id)
-                    # ??????????? EMA ????????????????
+                    # 新观测反向检查，避免旧 EMA 掩盖换人；五次新观测过低才解绑。
                     if box.track_id in fresh:
                         raw_score = self.gallery.score(fresh[box.track_id], track.identity_id)
                         track.bad_hits = track.bad_hits + 1 if raw_score < self.config.reid_tau_low else 0
@@ -154,7 +154,7 @@ class VideoSession:
                         track.candidate = identity_id
                         state = 'candidate'
                         if track.candidate_hits >= self.config.reid_confirm_frames:
-                            # ???????????????????????
+                            # 新号接管身份后，旧失踪轨迹不得复活成重复绿框。
                             for other in self.observations.values():
                                 if other is not track and other.identity_id == identity_id:
                                     other.identity_id = None
@@ -219,19 +219,19 @@ class VideoSession:
             logging.getLogger(__name__).exception("事件记录失败")
 
     def lock(self, track_id, seq):
-        """?????/?????????????????????????"""
+        """输入轨迹号和已显示帧，稳定且可提特征时注册身份，返回身份编号。"""
         box = next((item for item in self.boxes if item.track_id == track_id), None)
         if box is None or monotonic() - self.updated_at > 3 or seq > self.seq or self.seq - seq > 30:
-            raise SessionError('TRACK_GONE', '???????????????????')
+            raise SessionError('TRACK_GONE', '目标已离开画面或画面已过期，请重新选择')
         if box.cls != 0:
-            raise SessionError('UNSUPPORTED_TARGET', '?????????????? person ?')
+            raise SessionError('UNSUPPORTED_TARGET', '身份锁定目前支持人物，请选择 person 框')
         track = self.observations[track_id]
         if track.hits < 5 or track.feature is None:
-            raise SessionError('REID_NOT_WARM', '???????????????????????????????')
+            raise SessionError('REID_NOT_WARM', '请让目标在画面中停留片刻后再按住；过小的人物框可能无法提取特征')
         if track.identity_id not in self.gallery.items:
             crop = crop_target(self.frame, box.xyxy)
             if crop is None:
-                raise SessionError('REID_NOT_WARM', '?????????????')
+                raise SessionError('REID_NOT_WARM', '目标太小，请靠近一些后重试')
             feature = self.extractor.extract([crop], flip=True)[0]
             try:
                 identity = self.gallery.register(feature)
@@ -243,16 +243,16 @@ class VideoSession:
         return {'ok': True, 'identity_id': track.identity_id}
 
     def select(self, x, y, seq):
-        """?????????????????????????"""
+        """在触点命中框里挑面积最小者；空白处不锁定远处人物。"""
         hits = [box for box in self.boxes if box.track_id is not None
                 and box.xyxy[0] <= x <= box.xyxy[2] and box.xyxy[1] <= y <= box.xyxy[3]]
         if not hits:
-            raise SessionError('TRACK_GONE', '???????')
+            raise SessionError('TRACK_GONE', '请按住目标框内')
         box = min(hits, key=lambda item: (item.xyxy[2] - item.xyxy[0]) * (item.xyxy[3] - item.xyxy[1]))
         return self.lock(box.track_id, seq)
 
     def summaries(self):
-        """???????????????????????"""
+        """无输入，输出身份条；仅将本帧绑定身份标为在线。"""
         return [summary.model_copy(update={"thumb": self.thumbnail_url(summary.id)
                 if self.gallery.items[summary.id].thumbnail else None})
                 for summary in self.gallery.summaries({box.identity_id for box in self.boxes if box.identity_id})]
@@ -269,9 +269,9 @@ class VideoSession:
         return item.thumbnail
 
     def delete(self, identity_id):
-        """??????/??????????????"""
+        """删除身份特征和缩略图内存，清除绑定与候选。"""
         if identity_id not in self.gallery.items:
-            raise SessionError('IDENTITY_NOT_FOUND', '?????')
+            raise SessionError('IDENTITY_NOT_FOUND', '身份不存在')
         del self.gallery.items[identity_id]
         for track in self.observations.values():
             if track.identity_id == identity_id:
@@ -280,7 +280,7 @@ class VideoSession:
                 track.candidate, track.candidate_hits = None, 0
 
     def reset(self):
-        """???????????????????? Tracker ??????"""
+        """视频停止后清除图像和身份内存；轨迹号仍由 Tracker 保证不复用。"""
         self.recorder.stop()
         self.tracker.reset()
         self.observations.clear()
@@ -292,5 +292,5 @@ class VideoSession:
         self.was_online.clear()
 
     def snapshot(self):
-        """????????????/???"""
+        """仅输出跟踪数值，不含画面或向量。"""
         return self.tracker.snapshot()

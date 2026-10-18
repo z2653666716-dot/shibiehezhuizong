@@ -1,7 +1,7 @@
 """串联一帧图像的解码、检测、坐标转换和结果组装，属于 ViTrack 的帧处理流水线。
 
 浏览器推帧接口调用 process_message；IP 视频源后台任务调用 process_frame，共用检测与结果格式。
-本模块调用 Detector、会话独立的 Tracker 和 schemas，不自行打开设备；身份重识别仍待后续阶段。
+本模块串联 Detector、会话独立跟踪和外观重识别，不自行打开设备。
 """
 
 import asyncio
@@ -72,7 +72,7 @@ class Pipeline:
         self.recommended_max_side = self.config.max_side
         self.slow_frames = 0
 
-    def create_tracker(self) -> Tracker:
+    def create_tracker(self) -> VideoSession:
         """无输入，输出新的会话跟踪器；路由为每条浏览器连接或一次 IP 采集创建一个。"""
         session = VideoSession(self.config)
         self.sessions[session.token] = session
@@ -131,7 +131,7 @@ class Pipeline:
                         "message": "照片有多个人，已自动登记最大的人物" if len(people) > 1 else "照片已登记，将尝试匹配画面中的人物"}
         return await asyncio.to_thread(run)
 
-    async def reset_tracker(self, tracker: Tracker | None) -> None:
+    async def reset_tracker(self, tracker: Tracker | VideoSession | None) -> None:
         """接收已结束会话的跟踪器，等待在途处理完成后清理；避免取消等待后工作线程继续改旧状态。"""
         if tracker is not None:
             # 先撤销控制凭据；即使连接被框架取消，旧 HTTP 操作也不能再次访问它。
@@ -140,13 +140,13 @@ class Pipeline:
             with anyio.CancelScope(shield=True):
                 await asyncio.to_thread(self._reset_tracker, tracker)
 
-    def _reset_tracker(self, tracker: Tracker) -> None:
+    def _reset_tracker(self, tracker: Tracker | VideoSession) -> None:
         """清理线程取得同一处理锁，再丢弃轨迹；不会触及其他会话的跟踪器。"""
         with self._process_lock:
             tracker.reset()
             self.sessions.pop(getattr(tracker, "token", None), None)
 
-    async def process_message(self, message: FrameMessage, tracker: Tracker | None = None) -> FrameResult:
+    async def process_message(self, message: FrameMessage, tracker: Tracker | VideoSession | None = None) -> FrameResult:
         """处理浏览器的一帧消息，由未来 WebSocket 接口 await 调用。
 
         输入：经过检查的 FrameMessage 和可选会话 Tracker；输出：保留原 seq 的 FrameResult。
@@ -156,7 +156,7 @@ class Pipeline:
             raise PipelineError("BAD_FRAME", "请先将帧消息解析为 FrameMessage")
         return await asyncio.to_thread(self._run, message, message.seq, tracker)
 
-    async def process_frame(self, frame_bgr: np.ndarray, seq: int, tracker: Tracker | None = None) -> FrameResult:
+    async def process_frame(self, frame_bgr: np.ndarray, seq: int, tracker: Tracker | VideoSession | None = None) -> FrameResult:
         """处理直接提供的图像，由 IP 视频源后台任务调用共同入口。
 
         输入：BGR 数组、非负帧号、可选会话 Tracker；输出：与浏览器路径相同的 FrameResult。
@@ -166,7 +166,7 @@ class Pipeline:
             raise PipelineError("BAD_FRAME", "帧序号 seq 必须是非负整数")
         return await asyncio.to_thread(self._run, frame_bgr, seq, tracker)
 
-    def _run(self, source: FrameMessage | np.ndarray, seq: int, tracker: Tracker | None = None) -> FrameResult:
+    def _run(self, source: FrameMessage | np.ndarray, seq: int, tracker: Tracker | VideoSession | None = None) -> FrameResult:
         """后台线程共用的同步流程，供两个异步入口调用。
 
         输入：消息或图像，以及帧号；输出：检测结果与统计。发生错误时抛出 PipelineError。

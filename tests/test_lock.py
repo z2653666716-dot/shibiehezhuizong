@@ -20,7 +20,9 @@ def test_lock_lifecycle(service, monkeypatch, sample_stream):
             ws.send_json(frame)
             first = ws.receive_json()
             action = {"session_id": first["session_id"], "track_id": 1, "seq": 1}
-            assert client.post("/api/lock", json=action).json()["code"] == "REID_NOT_WARM"
+            not_warm = client.post("/api/lock", json=action).json()
+            assert not_warm["code"] == "REID_NOT_WARM"
+            assert "停留" in not_warm["message"] and "???" not in not_warm["message"]
             for seq in range(2, 6):
                 ws.send_json({**frame, "seq": seq}); ws.receive_json()
             action["seq"] = 5
