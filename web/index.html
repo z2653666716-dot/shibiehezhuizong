@@ -28,9 +28,10 @@
     </div>
     <nav aria-label="页面导航">
       <a href="#camera-section">实时画面</a>
+      <a href="#photo-section">照片登记</a>
       <a href="#diagnostics">日志诊断</a>
     </nav>
-    <button id="upload-photo" type="button" disabled aria-describedby="identity-hint">
+    <button id="upload-photo" type="button" disabled aria-describedby="photo-status">
       上传照片
     </button>
     <input id="photo-file" type="file" accept="image/jpeg,image/png" hidden>
@@ -46,6 +47,22 @@
     <noscript>
       <p>浏览器未启用 JavaScript，摄像头检测和前端日志交互无法运行；服务端日志链接仍可使用。</p>
     </noscript>
+
+    <!-- 登记结果常驻在画面上方，避免手机上错过短暂提示或看不到下方身份卡片。 -->
+    <section id="photo-section" aria-labelledby="photo-heading">
+      <div class="section-header">
+        <h2 id="photo-heading">照片登记与匹配</h2>
+        <a href="#identity-section">查看已绑定身份</a>
+      </div>
+      <div class="photo-feedback">
+        <img id="photo-preview" width="60" height="80" hidden alt="最近成功登记的照片缩略图">
+        <div>
+          <p id="photo-status" role="status" data-state="idle">尚未登记照片。开始检测后，点击顶部“上传照片”。</p>
+          <p id="photo-match-status" role="status">登记成功与匹配成功分别显示；只有确认匹配后才会出现实线绿框。</p>
+        </div>
+      </div>
+      <p class="photo-hint">当前按人物整体外观匹配，请使用上半身或全身清楚的单人照片；脸部特写尚不支持。停止检测后清除登记内容。</p>
+    </section>
 
     <section id="camera-section" aria-labelledby="camera-heading">
       <div class="section-header">
@@ -74,6 +91,8 @@
       </div>
       <p id="camera-hint">操作开放后，点击“开始检测”并允许浏览器访问摄像头。</p>
       <p id="result-summary" role="status">尚未收到检测结果。</p>
+      <p id="lock-action-status" role="status">尚未发送手动锁定请求。</p>
+      <p id="target-status" role="status">当前尚未登记跟踪目标。</p>
 
       <!--
         dl 把指标名称与数值配对。初始 -- 表示尚无数据，不使用虚构的 FPS。

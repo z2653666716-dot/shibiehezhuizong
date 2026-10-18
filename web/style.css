@@ -175,7 +175,7 @@ main > *, .diagnostic-grid > * {
   min-width: 0;
 }
 
-#page-status, main > noscript, #diagnostics {
+#page-status, main > noscript, #diagnostics, #photo-section {
   grid-column: 1 / -1;
 }
 
@@ -261,6 +261,8 @@ main > section, #diagnostics {
   width: 100%;
   height: 100%;
   touch-action: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 
 /* 长按目标时不滚动画面；身份卡片可横向滑动，提示浮在画面外。 */
@@ -271,6 +273,15 @@ main > section, #diagnostics {
 .identity-card { flex-shrink: 0; padding: 8px; border: 1px solid #41e18b; border-radius: 10px; }
 .identity-card.offline { opacity: 0.55; border-color: #6d7780; }
 .identity-card button { margin: 3px; }
+
+/* HTTP登记结果与视频匹配结果分开常驻显示；失败文字不会随短暂提示一起消失。 */
+.photo-feedback { display: flex; align-items: flex-start; gap: 14px; }
+.photo-feedback > div { min-width: 0; }
+#photo-preview { object-fit: contain; flex-shrink: 0; border-radius: 6px; }
+#photo-status { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
+#photo-status[data-state="error"] { color: var(--danger); }
+#photo-status[data-state="registered"] { color: var(--accent); }
+.photo-hint, #photo-match-status, #lock-action-status, #target-status { margin-top: 8px; font-size: .9rem; }
 
 /* 只有空状态使用固定比例；真实视频可以是横屏或竖屏，不会被裁成 16:9。 */
 #camera-placeholder {

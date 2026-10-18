@@ -96,7 +96,12 @@ class Pipeline:
                 session = self.sessions.get(session_id)
                 if session is None:
                     raise SessionError("SESSION_GONE", "请先开始检测，再选择照片")
-                frame = decode_photo(content, content_type)
+                session.diagnostic("photo_received", bytes=len(content))
+                try:
+                    frame = decode_photo(content, content_type)
+                except SessionError as error:
+                    session.diagnostic("photo_rejected", reason=error.code)
+                    raise
                 height, width = frame.shape[:2]
                 scale = min(1, self.config.max_side / max(width, height))
                 if scale < 1:
@@ -104,11 +109,13 @@ class Pipeline:
                 height, width = frame.shape[:2]
                 people = [item for item in self.detector.detect(frame) if item.cls == 0]
                 if not people:
+                    session.diagnostic("photo_rejected", reason="NO_TARGET_IN_PHOTO")
                     raise SessionError("NO_TARGET_IN_PHOTO", "照片中没有检测到人物")
                 target = max(people, key=lambda item: (item.xyxy[2] - item.xyxy[0]) * (item.xyxy[3] - item.xyxy[1]))
                 box = Box.from_detection(target, width, height)
                 crop = crop_target(frame, box.xyxy)
                 if crop is None:
+                    session.diagnostic("photo_rejected", reason="PHOTO_TARGET_SMALL")
                     raise SessionError("PHOTO_TARGET_SMALL", "照片中的人物太小，请选择更清晰的人物照片")
                 if self.extractor is None:
                     self.extractor = FeatureExtractor(self.config)
@@ -123,6 +130,8 @@ class Pipeline:
                     identity = session.register_identity(feature, name="照片注册", source="photo", thumbnail=encoded.tobytes())
                 except ValueError as error:
                     raise SessionError("IDENTITY_LIMIT", str(error)) from error
+                session.diagnostic("photo_registered", identity_id=identity.id, people=len(people),
+                                   crop_width=int(crop.shape[1]), crop_height=int(crop.shape[0]))
                 return {"ok": True, "identity_id": identity.id,
                         "thumb": session.thumbnail_url(identity.id),
                         "quality": {"detection_score": target.score, "person_count": len(people),

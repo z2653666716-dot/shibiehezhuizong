@@ -177,6 +177,16 @@ class SelectRequest(DataModel):
     seq: int = Field(ge=0, strict=True)
 
 
+class InteractionEvent(DataModel):
+    """仅允许有限的手势诊断字段；不接受任意消息、照片、文件名或向量。"""
+    session_id: str = Field(min_length=20, max_length=100)
+    seq: int = Field(ge=0, strict=True)
+    track_id: int | None = Field(default=None, ge=0, strict=True)
+    event: Literal["press_start", "press_commit", "press_cancel", "menu_suppressed", "photo_too_large"]
+    reason: Literal["hold_complete", "released_early", "pointer_cancel", "capture_lost", "moved", "stopped", "duplicate_menu", "size_limit"] | None = None
+    pointer: Literal["touch", "mouse", "pen", "unknown"] = "unknown"
+
+
 class RecordRequest(DataModel):
     """录制操作始终指定视频会话；开始另需confirm=true且服务允许保存。"""
     session_id: str = Field(min_length=20, max_length=100)
