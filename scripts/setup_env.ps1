@@ -187,7 +187,8 @@ if ($InstallDependencies) {
         if ($LASTEXITCODE -ne 0) { throw '环境实测失败，不能视为 GPU 环境验收通过。' }
 
         # 锁文件记录本次真正安装的版本；主清单记录兼容范围，两者职责不同。
-        $lockedPackages = & $pythonPath -I -m pip freeze
+        # pip list 输出版本号，避免从本地 wheel 安装时把本机 file:/// 路径写进锁文件。
+        $lockedPackages = & $pythonPath -I -m pip list --format=freeze --exclude pip --exclude setuptools --exclude wheel --disable-pip-version-check
         if ($LASTEXITCODE -ne 0) { throw '无法生成依赖锁文件。' }
         $lockText = "# CUDA builds require the official PyTorch index.`n" +
                     "--extra-index-url " + $downloadSources.TorchCuda + "`n" +

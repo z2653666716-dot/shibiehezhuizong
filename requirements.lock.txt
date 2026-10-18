@@ -52,10 +52,10 @@ requests==2.34.2
 six==1.17.0
 starlette==1.8.0
 sympy==1.14.0
-torch @ file:///E:/course_task/homework3/work/wheels/torch-2.9.1%2Bcu128-cp311-cp311-win_amd64.whl#sha256=633005a3700e81b5be0df2a7d3c1d48aced23ed927653797a3bd2b144a3aeeb6
-torchvision @ file:///E:/course_task/homework3/work/wheels/torchvision-0.24.1%2Bcu128-cp311-cp311-win_amd64.whl#sha256=6d836745bd3130ef8f3569c9f0d9d70103b5e2e9fa058310bcac5f63bcf2d043
-typing-inspection==0.4.4
+torch==2.9.1+cu128
+torchvision==0.24.1+cu128
 typing_extensions==4.16.0
+typing-inspection==0.4.4
 ultralytics==8.4.182
 ultralytics-platform==0.1.90
 ultralytics-thop==2.2.2

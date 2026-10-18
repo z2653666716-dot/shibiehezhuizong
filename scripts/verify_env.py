@@ -21,6 +21,8 @@ def collect_environment_report() -> dict:
     由 main 调用；缺少依赖或运算错误时抛出异常，让调用脚本知道检查失败。
     """
     project_root = Path(__file__).resolve().parents[1]
+    # 检查依赖时也不允许第三方库自动补装包，缺少依赖应明确报错。
+    os.environ["YOLO_AUTOINSTALL"] = "false"
     # 把第三方库首次导入时产生的配置、缓存留在项目 work 目录。
     for variable, folder in {
         "YOLO_CONFIG_DIR": "ultralytics",

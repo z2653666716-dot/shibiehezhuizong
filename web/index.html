@@ -1,0 +1,175 @@
+<!doctype html>
+<!--
+  ViTrack 浏览器端的页面入口：定义画面、状态、操作与日志诊断区域。
+  app/main.py 通过 / 和 /pc 返回本文件；本文件定义各个页面区域。
+  style.css 负责布局；app.js 接入摄像头、传帧和检测，camera.js 管理设备。
+  控件先保持禁用，由相应模块初始化；logger.js 提供统一诊断入口。
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101820">
+  <meta name="description" content="ViTrack：由电脑处理摄像头画面，检测目标并显示结果，提供日志诊断入口。">
+  <title>ViTrack · 视觉目标检测与跟踪</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script type="module" src="/static/logger.js"></script>
+  <script type="module" src="/static/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+
+  <header class="app-header">
+    <div>
+      <h1>ViTrack</h1>
+      <p>视觉目标检测与跟踪</p>
+    </div>
+    <nav aria-label="页面导航">
+      <a href="#camera-section">实时画面</a>
+      <a href="#diagnostics">日志诊断</a>
+    </nav>
+    <button id="upload-photo" type="button" disabled aria-describedby="identity-hint">
+      上传照片
+    </button>
+  </header>
+
+  <main id="main-content">
+    <!-- 初始状态如实说明可用范围；后续脚本在初始化成功后更新这条提示。 -->
+    <p id="page-status" role="status">
+      检测界面正在初始化，请稍候。
+    </p>
+    <noscript>
+      <p>浏览器未启用 JavaScript，摄像头检测和前端日志交互无法运行；服务端日志链接仍可使用。</p>
+    </noscript>
+
+    <section id="camera-section" aria-labelledby="camera-heading">
+      <div class="section-header">
+        <h2 id="camera-heading">实时画面</h2>
+        <p>连接状态：<span id="connection-status" role="status">未连接</span></p>
+      </div>
+
+      <!--
+        video 显示摄像头，canvas 将来叠放在它上方绘制检测框。
+        两者由后续脚本按真实视频尺寸同步；这里的宽高只是初始尺寸。
+        hidden 使尚无数据的区域不显示成黑屏，也不冒充已有摄像头画面。
+        muted 避免播放声音，playsinline 使手机尽量在页面内播放而不强制全屏。
+      -->
+      <div id="camera-stage" class="camera-stage" aria-describedby="camera-hint">
+        <video id="camera-video" width="640" height="360" muted playsinline autoplay
+               hidden aria-label="摄像头实时画面"></video>
+        <canvas id="detection-overlay" width="640" height="360" hidden aria-hidden="true">
+          当前浏览器不支持画布，无法显示检测框。
+        </canvas>
+        <div id="camera-placeholder">
+          <p>等待摄像头画面</p>
+          <p id="camera-status">尚未启动摄像头</p>
+        </div>
+      </div>
+      <p id="camera-hint">操作开放后，点击“开始检测”并允许浏览器访问摄像头。</p>
+      <p id="result-summary" role="status">尚未收到检测结果。</p>
+
+      <!--
+        dl 把指标名称与数值配对。初始 -- 表示尚无数据，不使用虚构的 FPS。
+        高频变化的指标不设为实时播报区，避免读屏软件每帧重复朗读。
+      -->
+      <dl id="detection-metrics" class="metrics">
+        <div><dt>检测帧率</dt><dd><span id="fps-value">--</span> FPS</dd></div>
+        <div><dt>服务端处理耗时</dt><dd><span id="latency-value">--</span> ms</dd></div>
+        <div><dt>已接收结果</dt><dd><span id="frame-count">--</span> 帧</dd></div>
+        <div><dt>画面尺寸</dt><dd id="frame-size">--</dd></div>
+        <div><dt>最近帧号</dt><dd id="latest-frame">--</dd></div>
+      </dl>
+      <p>服务端处理耗时表示电脑处理一帧所用的时间，不包含网络传输和浏览器显示。</p>
+    </section>
+
+    <section id="controls-section" aria-labelledby="controls-heading">
+      <h2 id="controls-heading">检测操作</h2>
+      <p id="controls-hint">摄像头操作尚未接入，下列控件暂不可用。</p>
+      <div class="primary-actions">
+        <button id="start-detection" type="button" disabled aria-describedby="controls-hint">开始检测</button>
+        <button id="stop-detection" type="button" disabled aria-describedby="controls-hint">停止检测</button>
+      </div>
+
+      <!-- fieldset disabled 会一起禁用组内控件；后续脚本按运行状态启用。 -->
+      <fieldset id="camera-controls" disabled aria-describedby="controls-hint">
+        <legend>摄像头设置</legend>
+        <label for="camera-facing">摄像头方向</label>
+        <select id="camera-facing" name="camera-facing">
+          <option value="environment" selected>后置或默认摄像头</option>
+          <option value="user">前置摄像头</option>
+        </select>
+        <label>
+          <input id="mirror-preview" type="checkbox">
+          镜像预览
+        </label>
+      </fieldset>
+      <button id="record-video" type="button" disabled aria-describedby="record-hint">开始录制</button>
+      <p id="record-hint">视频录制将在后续开放。</p>
+    </section>
+
+    <section id="identity-section" aria-labelledby="identity-heading">
+      <h2 id="identity-heading">已绑定身份</h2>
+      <p id="identity-hint">长按锁定、照片注册和身份保持将在后续开放。</p>
+      <!-- 后续脚本把身份卡片放入此列表；空状态独立显示，避免被误当作一张身份卡。 -->
+      <p id="identity-empty">暂无已绑定身份。</p>
+      <ul id="identity-list" aria-label="已绑定身份列表"></ul>
+    </section>
+
+    <!-- details/summary 的展开和收起由浏览器提供，不依赖尚未编写的脚本。 -->
+    <details id="diagnostics" open>
+      <summary><h2>日志诊断</h2></summary>
+      <p>出现问题时，先记录错误提示与服务端日志编号，再下载日志进行排查。</p>
+
+      <!-- 将诊断子区域分组，宽屏两列、手机单列，内容与编号保持不变。 -->
+      <div class="diagnostic-grid">
+        <section aria-labelledby="error-heading">
+          <h3 id="error-heading">最近问题</h3>
+          <p id="latest-error" role="status">尚未采集前端日志。</p>
+          <dl>
+            <div><dt>服务端日志编号</dt><dd><code id="trace-id">尚未建立连接</code></dd></div>
+            <div><dt>出错帧号</dt><dd id="error-frame">--</dd></div>
+          </dl>
+          <p>日志编号用于在下载的日志中查找同一次请求或连接；出错帧号用于定位具体画面。</p>
+        </section>
+
+        <section aria-labelledby="client-log-heading">
+          <h3 id="client-log-heading">浏览器日志</h3>
+          <p id="client-log-hint">浏览器日志正在初始化；摄像头与接口模块将在后续接入。</p>
+          <ol id="client-log-list" aria-label="近期浏览器日志">
+            <li id="client-log-empty">尚无已采集的记录。</li>
+          </ol>
+          <div class="log-actions">
+            <button id="export-client-logs" type="button" disabled aria-describedby="client-log-hint">导出浏览器日志</button>
+            <button id="clear-client-logs" type="button" disabled aria-describedby="client-log-hint">清空浏览器日志</button>
+          </div>
+        </section>
+
+        <section aria-labelledby="server-log-heading">
+          <h3 id="server-log-heading">服务端日志</h3>
+          <p>以下下载链接由电脑上的检测服务提供，可以直接使用。</p>
+          <!-- 普通链接即可触发附件下载，不需要等待前端日志功能完成。 -->
+          <ul id="server-log-list">
+            <li><a id="download-app-log" href="/api/logs/app.log" download="app.log">下载运行日志</a>：启动、连接和处理摘要。</li>
+            <li><a id="download-error-log" href="/api/logs/errors.log" download="errors.log">下载错误日志</a>：异常与出错位置，无错误时文件可能为空。</li>
+          </ul>
+          <p><a href="/api/logs">查看全部服务端日志列表</a>（含已有的历史日志）</p>
+        </section>
+
+        <section aria-labelledby="service-heading">
+          <h3 id="service-heading">服务信息</h3>
+          <dl>
+            <div><dt>服务状态</dt><dd id="health-status">尚未读取</dd></div>
+            <div><dt>计算设备</dt><dd id="device-name">尚未读取</dd></div>
+            <div><dt>检测模型</dt><dd id="model-name">尚未读取</dd></div>
+          </dl>
+          <p><a href="/api/health">查看服务健康信息</a></p>
+        </section>
+      </div>
+    </details>
+  </main>
+
+  <footer>
+    <p>ViTrack · 摄像头画面由电脑处理，检测结果在浏览器显示。</p>
+  </footer>
+</body>
+</html>
