@@ -231,16 +231,21 @@ def test_service_confirmation_and_packets(service, monkeypatch, sample_stream):
             image = cv2.imdecode(np.frombuffer(base64.b64decode(packet["img"]), np.uint8), cv2.IMREAD_COLOR)
             assert image.shape[:2] == (packet["h"], packet["w"]) and max(image.shape[:2]) <= 640
             assert packet["result"]["boxes"][0]["xyxy"] == pytest.approx([0.2, 0.2, 0.8, 0.8])
+            track_id = packet["result"]["boxes"][0]["track_id"]
+            assert isinstance(track_id, int) and track_id > 0
             viewer.send_json({"type": "next", "after": packet["seq"]})
             next_packet = viewer.receive_json()
             assert next_packet["seq"] > packet["seq"]
+            assert next_packet["result"]["boxes"][0]["track_id"] == track_id
             viewer.send_text("not json")
             assert viewer.receive_json()["code"] == "BAD_REQUEST"
             viewer.send_json({"type": "next", "after": -1})
             assert viewer.receive_json()["code"] == "BAD_REQUEST"
             with client.websocket_connect("/ws/ipcam") as second:
                 second.send_json({"type": "next", "after": 0})
-                assert second.receive_json()["type"] == "ipcam_frame"
+                second_packet = second.receive_json()
+                assert second_packet["type"] == "ipcam_frame"
+                assert second_packet["result"]["boxes"][0]["track_id"] == track_id
             assert sample_stream["requests"] == 1
         with client.websocket_connect("/ws/stream") as wrong:
             assert wrong.receive_json()["code"] == "SOURCE_MISMATCH"

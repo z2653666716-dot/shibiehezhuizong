@@ -260,8 +260,17 @@ main > section, #diagnostics {
   display: block;
   width: 100%;
   height: 100%;
-  touch-action: manipulation;
+  touch-action: none;
 }
+
+/* 长按目标时不滚动画面；身份卡片可横向滑动，提示浮在画面外。 */
+.toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 20;
+  background: #18392b; color: #fff; padding: 12px 18px; border: 1px solid #41e18b; border-radius: 12px;
+  max-width: 90vw; box-shadow: 0 6px 24px #0008; }
+#identity-list { display: flex; gap: 12px; overflow-x: auto; padding: 8px 0; list-style: none; }
+.identity-card { flex-shrink: 0; padding: 8px; border: 1px solid #41e18b; border-radius: 10px; }
+.identity-card.offline { opacity: 0.55; border-color: #6d7780; }
+.identity-card button { margin: 3px; }
 
 /* 只有空状态使用固定比例；真实视频可以是横屏或竖屏，不会被裁成 16:9。 */
 #camera-placeholder {

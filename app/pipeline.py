@@ -1,10 +1,11 @@
 """串联一帧图像的解码、检测、坐标转换和结果组装，属于 ViTrack 的帧处理流水线。
 
 浏览器推帧接口调用 process_message；IP 视频源后台任务调用 process_frame，共用检测与结果格式。
-本模块调用 Detector 和 schemas，不自行打开网络端点或摄像头；跟踪与重识别仍待后续阶段。
+本模块调用 Detector、会话独立的 Tracker 和 schemas，不自行打开设备；身份重识别仍待后续阶段。
 """
 
 import asyncio
+import anyio
 import base64
 import binascii
 from collections import deque
@@ -17,8 +18,11 @@ import cv2
 import numpy as np
 from PIL.JpegImagePlugin import JpegImageFile
 
+from .config import AppConfig
 from .detector import Detector
 from .schemas import Box, ErrorResponse, FrameMessage, FrameResult
+from .tracker import Tracker
+from .session import VideoSession, SessionError
 
 
 logger = logging.getLogger(__name__)
@@ -50,38 +54,71 @@ class Pipeline:
     线程锁保护实际工作，调用方取消等待也不会提前释放仍在推理的模型。
     """
 
-    def __init__(self, detector: Detector) -> None:
-        """保存检测器并初始化处理锁、有限长度统计窗口和最新结果。
+    def __init__(self, detector: Detector, config: AppConfig | None = None) -> None:
+        """保存检测器/可选配置，初始化处理锁、有限长度统计窗口和最新结果。
 
         不重新加载模型；未来应用启动流程创建本对象，健康接口可读取最新统计。
         """
         self.detector = detector
+        self.config = config or getattr(detector, "config", None) or AppConfig()
         self._process_lock = threading.Lock()
         self._completion_times: deque[float] = deque(maxlen=FPS_WINDOW)
         self.latest_result: FrameResult | None = None
         self.processed_frames = 0
+        self.sessions = {}
 
-    async def process_message(self, message: FrameMessage) -> FrameResult:
+    def create_tracker(self) -> Tracker:
+        """无输入，输出新的会话跟踪器；路由为每条浏览器连接或一次 IP 采集创建一个。"""
+        session = VideoSession(self.config)
+        self.sessions[session.token] = session
+        return session
+
+    async def session_action(self, session_id, action, *args):
+        """输入随机会话凭据与操作名，在线程中串行执行，输出操作结果。"""
+        def run():
+            with self._process_lock:
+                session = self.sessions.get(session_id)
+                if session is None:
+                    raise SessionError("SESSION_GONE", "视频会话已结束，请开始检测后再操作")
+                return getattr(session, action)(*args)
+        return await asyncio.to_thread(run)
+
+    async def reset_tracker(self, tracker: Tracker | None) -> None:
+        """接收已结束会话的跟踪器，等待在途处理完成后清理；避免取消等待后工作线程继续改旧状态。"""
+        if tracker is not None:
+            # 先撤销控制凭据；即使连接被框架取消，旧 HTTP 操作也不能再次访问它。
+            self.sessions.pop(getattr(tracker, "token", None), None)
+            # Starlette 在断开连接时可取消整个作用域；清理在保护区等待底层线程结束。
+            with anyio.CancelScope(shield=True):
+                await asyncio.to_thread(self._reset_tracker, tracker)
+
+    def _reset_tracker(self, tracker: Tracker) -> None:
+        """清理线程取得同一处理锁，再丢弃轨迹；不会触及其他会话的跟踪器。"""
+        with self._process_lock:
+            tracker.reset()
+            self.sessions.pop(getattr(tracker, "token", None), None)
+
+    async def process_message(self, message: FrameMessage, tracker: Tracker | None = None) -> FrameResult:
         """处理浏览器的一帧消息，由未来 WebSocket 接口 await 调用。
 
-        输入：已经过 schemas 检查的 FrameMessage；输出：保留原 seq 的 FrameResult。
+        输入：经过检查的 FrameMessage 和可选会话 Tracker；输出：保留原 seq 的 FrameResult。
         to_thread 将解码和推理交给后台线程，等待期间不占住事件循环。
         """
         if not isinstance(message, FrameMessage):
             raise PipelineError("BAD_FRAME", "请先将帧消息解析为 FrameMessage")
-        return await asyncio.to_thread(self._run, message, message.seq)
+        return await asyncio.to_thread(self._run, message, message.seq, tracker)
 
-    async def process_frame(self, frame_bgr: np.ndarray, seq: int) -> FrameResult:
+    async def process_frame(self, frame_bgr: np.ndarray, seq: int, tracker: Tracker | None = None) -> FrameResult:
         """处理直接提供的图像，由 IP 视频源后台任务调用共同入口。
 
-        输入：BGR 数组和非负整数帧号；输出：与浏览器路径相同格式的 FrameResult。
+        输入：BGR 数组、非负帧号、可选会话 Tracker；输出：与浏览器路径相同的 FrameResult。
         本方法不读取摄像头，调用方等待处理期间应保留该帧内容。
         """
         if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
             raise PipelineError("BAD_FRAME", "帧序号 seq 必须是非负整数")
-        return await asyncio.to_thread(self._run, frame_bgr, seq)
+        return await asyncio.to_thread(self._run, frame_bgr, seq, tracker)
 
-    def _run(self, source: FrameMessage | np.ndarray, seq: int) -> FrameResult:
+    def _run(self, source: FrameMessage | np.ndarray, seq: int, tracker: Tracker | None = None) -> FrameResult:
         """后台线程共用的同步流程，供两个异步入口调用。
 
         输入：消息或图像，以及帧号；输出：检测结果与统计。发生错误时抛出 PipelineError。
@@ -94,11 +131,17 @@ class Pipeline:
             height, width = frame.shape[:2]
             try:
                 detections = self.detector.detect(frame)
-                # 每个像素框除以原图尺寸，得到手机画布可使用的 0～1 坐标。
-                boxes = [Box.from_detection(item, width, height) for item in detections]
-                result = FrameResult(seq=seq, boxes=boxes)
+                # 跟踪状态由调用方的会话持有；共享的只是模型与处理锁，不把不同视频混在一起。
+                boxes = tracker.update(detections, width, height) if tracker is not None else [
+                    Box.from_detection(item, width, height) for item in detections
+                ]
+                if isinstance(tracker, VideoSession):
+                    tracker.seq = seq
+                result = FrameResult(seq=seq, boxes=boxes,
+                                     session_id=getattr(tracker, "token", None),
+                                     identities=tracker.summaries() if isinstance(tracker, VideoSession) else [])
             except Exception as error:
-                logger.exception("检测或结果转换失败")
+                logger.exception("检测、跟踪或结果转换失败")
                 raise PipelineError("INFERENCE_FAILED", "目标检测失败，请检查服务日志") from error
 
             finished = perf_counter()

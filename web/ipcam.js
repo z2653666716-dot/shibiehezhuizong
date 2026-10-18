@@ -5,6 +5,7 @@
  */
 import { logger } from "./logger.js";
 import { BoxSmoother } from "./box_smoother.js";
+import { TargetInteraction } from "./interaction.js";
 
 const API_TIMEOUT_MS = 10000;
 const CONNECT_TIMEOUT_MS = 10000;
@@ -32,6 +33,7 @@ export function checkIpPacket(data) {
     if (!box || !Number.isInteger(box.cls) || box.cls < 0 || box.cls > 79 ||
         typeof box.name !== "string" || !box.name.trim() ||
         !finite(box.score) || box.score < 0 || box.score > 1 ||
+        (box.track_id != null && (!Number.isSafeInteger(box.track_id) || box.track_id < 0)) ||
         !Array.isArray(box.xyxy) || box.xyxy.length !== 4 ||
         !box.xyxy.every((value) => finite(value) && value >= 0 && value <= 1) ||
         box.xyxy[0] >= box.xyxy[2] || box.xyxy[1] >= box.xyxy[3]) {
@@ -105,6 +107,8 @@ export class IpCameraClient {
   bind() {
     if (this.bound) return;
     this.bound = true;
+    this.interaction = new TargetInteraction(this.overlay,
+      () => ({ boxes: this.boxes, mirrored: this.mirrored }), () => this.render());
     this.nodes.video.hidden = true;
     document.getElementById("ipcam-consent-panel").hidden = false;
     document.getElementById("camera-heading").textContent = "IP 视频源画面";
@@ -293,6 +297,7 @@ export class IpCameraClient {
       this.lastImage = image;
       // 收到并解码当前图像后才更新平滑；尺寸改变时模块自动丢弃旧历史。
       this.boxes = this.smoother.update(packet.result.boxes, packet.w, packet.h);
+      this.interaction.accept(packet.result);
       this.lastSeq = packet.seq;
       this.received += 1;
       this.render();
@@ -342,17 +347,25 @@ export class IpCameraClient {
       let [left, top, right, bottom] = box.xyxy;
       if (this.mirrored) [left, right] = [1 - right, 1 - left];
       const x = left * width, y = top * height;
-      context.strokeStyle = "#ffffff";
+      const style = this.interaction.style(box);
+      context.strokeStyle = style.color;
+      context.lineWidth = style.width * scale;
+      context.setLineDash(style.dash.map(value => value * scale));
+      context.globalAlpha = box.score < 0.45 ? 0.35 : 1;
       context.strokeRect(x, y, (right - left) * width, (bottom - top) * height);
-      const text = box.name.slice(0, 40) + " " + box.score.toFixed(2);
+      // 轨迹号与当前分数都来自当前结果，镜像仅影响位置，不反转文字。
+      const track = box.track_id == null ? "" : " #" + box.track_id;
+      const text = style.text;
       const labelWidth = Math.min(width, context.measureText(text).width + 2 * padding);
       const labelX = Math.max(0, Math.min(x, width - labelWidth));
       const labelY = Math.max(0, Math.min(y >= labelHeight ? y - labelHeight : y, height - labelHeight));
       context.fillStyle = "rgba(24, 28, 32, 0.88)";
       context.fillRect(labelX, labelY, labelWidth, labelHeight);
-      context.fillStyle = "#ffffff";
+      context.fillStyle = style.color;
       context.fillText(text, labelX + padding, labelY + labelHeight / 2, Math.max(1, labelWidth - 2 * padding));
     }
+    context.globalAlpha = 1;
+    this.interaction.drawProgress(context);
   }
 
   /** 无输入，关闭观看连接与计时器；sourceRequested 要等待停止接口确认后再清除。 */
@@ -374,6 +387,7 @@ export class IpCameraClient {
     this.lastImage = null;
     this.boxes = [];
     this.smoother.reset();
+    this.interaction?.reset();
     this.context.clearRect(0, 0, this.preview.width, this.preview.height);
     this.overlayContext.clearRect(0, 0, this.overlay.width, this.overlay.height);
     this.preview.hidden = this.overlay.hidden = true;

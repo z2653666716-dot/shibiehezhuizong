@@ -7,9 +7,9 @@
 ## 当前状态
 
 - 日期：2026-10-18。
-- 当前大阶段：P0 已提交 cc20f2e；P1 已提交 c974f51；P2 手机接入验收完成，两种模式均有用户 5 分钟运行及停止释放确认，23 项测试通过。衣物误检提高实际像素后无改善，按用户最新要求记为已知限制并暂缓修改，优先进入 P3；实拍平滑改善未复测，不宣称已经验证。
+- 当前大阶段：P0 已提交 cc20f2e；P1 已提交 c974f51；P2 已提交 f2ac98e。衣物误检提高实际像素后无改善，按用户要求暂缓。P3 基础 ByteTrack 与按会话隔离的轨迹号已接入，25 项跟踪/流检查通过；长按锁定、选择交互和 P3 整体验收未完成。
 - 已完成：项目规则、独立环境、项目依赖、GPU 实测、模型下载、镜像检查、单图 GPU 检测及当前需要的目录与说明文件。
-- 业务服务入口为 `app.main:app`，由 Uvicorn 加载；前端入口 web/index.html 加载 web/start.js，按来源选择 app.js 或 ipcam.js。P1 曾授权验证 PC：约用 36 秒，30 秒计时窗口约 27.4 FPS。手机浏览器结果为用户人工反馈，没有自动 FPS 采样；最新默认镜像修改仅用样例验证，未重新打开设备。跟踪、锁定和重识别待后续阶段。
+- 业务服务入口为 `app.main:app`，由 Uvicorn 加载；前端入口 web/index.html 加载 web/start.js，按来源选择 app.js 或 ipcam.js。P1 实机约 27.4 FPS，手机两模式 5 分钟为人工反馈；本轮跟踪仅用合成/公开样例，不重新打开设备。锁定和重识别仍待后续阶段，轨迹号不等于身份。
 - 本次隐私范围：不保存或向外部上传实拍内容，只保留数值与结论。前面各里程碑按发生时状态记录，以本节和末尾最新实机记录为当前结论。
 
 ## 已完成：保存项目规则
@@ -547,11 +547,43 @@
   衣物误检与实拍平滑效果边界完整保留，不把“暂缓优化”描述成已修复；未保存/提交任何用户实拍内容。
 - 下一步按顺序进入 P3：封装 ByteTrack、接入按会话隔离的轨迹编号；长按锁定与选择交互留待下一组。
 
+## P3：ByteTrack 封装与会话接入（本组三个关键步骤的第2、3步）
+
+- 本组第1步提高实际输入与模型内部尺寸到 960，仍有衣物误检；已按用户要求结束该问题优化并完成 P2 本地提交 f2ac98e。
+- 第2步新增 app/tracker.py：加载当前已安装 ByteTrack 配置，每个视频会话单独持有状态，各类别分别关联。
+  update 返回当前检测同数量/同顺序的 Box，仅补 track_id；分数、原始坐标、类别不改，丢失目标不补画框。
+  公开编号在同一个实例内递增，重置/尺寸改变后不复用；过期映射清理，snapshot 只输出数值状态。
+- tests/test_tracker.py 用真实算法和合成框覆盖顺序变化、短暂丢失、过期换号、类别/实例隔离、重置/尺寸、低分二阶段和非法配置。
+  初次构造测试发现当前 Ultralytics BYTETracker 已移除 frame_rate 参数；按实际安装版本改为直接使用 track_buffer，未更换依赖或算法。
+  最终 7 passed，2.73 秒；没有模型预测、图像或隐私设备输入。
+- 第3步修改 app/pipeline.py：共用 Detector 与处理锁，会话各自 create_tracker；帧入口接受可选 tracker。
+  reset_tracker 在线程中等处理锁再清理，避免取消 await 后仍运行的原生线程写回旧状态。
+  app/main.py 的 WS 每连接一个 Tracker，IP 每次启动一个 Tracker且多观看者共用；停止/断开/退出时清理。
+  web/app.js、web/ipcam.js 校验轨迹号并显示 #编号，检测分数照实显示，原有镜像/平滑保留。
+  app/config.py 仅更新阶段注释，健康接口 stage=P3，明确未代表锁定和重识别完成。
+- 新增 tests/test_tracking_flow.py；更新原 IP 接口/页面检查及 scripts/verify_stream.py 的编号检查。
+  命令：项目 Python -X utf8 -m pytest tests/test_tracker.py tests/test_tracking_flow.py tests/test_ipcamera.py tests/test_ipcam_page.py tests/test_box_smoother.py --basetemp=work/tracking_flow_pytest -q --disable-warnings --maxfail=1。
+  退出码 0，25 passed、3 warnings，40.53 秒；含取消中的真实工作线程清理和双 WS 会话隔离。
+- 固定公开样例浏览器回归：项目 Python -X utf8 scripts/verify_stream.py --duration 3 --report outputs/tracking/browser_stream_report.json。
+  退出码 0，3.001 秒完成 68 帧，22.658 FPS，四个目标的轨迹号在采样前后保持 1/2/3/4，最多一帧在途。
+  停止后连接、合成轨道和平滑历史释放，临时服务关闭；权限均 denied，不把样例吞吐当实拍性能。
+- 新版服务就绪检查：已核对原启动器进程的项目脚本路径，仅停止本任务的 22880/43788 两棵进程树后重启。
+  新手机启动器 PID=22896（8443），IP 观看启动器 PID=19736（8001）；原地址保持不变。
+  两服务 stage=P3、idle、processed_frames=0，不自动连接设备；元信息保存在 outputs/phone 两份服务信息中。
+- README 更新职责、数据流、参数与阅读顺序，数值汇总 outputs/tracking/tracking_check_report.json。
+  本组三步完成并暂停；下一组目标选择/长按锁定。P3 未整体验收，不创建 P3 阶段提交。
+
 ## 后续功能待验收
+
+- 2026-10-18 连续开发：用户明确要求“直接实现所有功能”，本轮不再按三步暂停。
+- P3 功能实现：新增 session.py 与 interaction.js，完成独立会话凭据、5 次稳定观测检查、长按 600ms/短按/右键/L、镜像命中、身份条和删除。
+  锁定与跟踪检查：pytest tests/test_lock.py tests/test_tracker.py tests/test_tracking_flow.py tests/test_interaction.py，12 passed、1 warning，16.21 秒。
+  发现 Starlette 取消作用域会中断断开时清理；修复为先撤销会话凭据，再在取消保护区等待在途线程并清空状态。
+  隔离 Edge 用公开样例验证实际 pointer 长按变绿、镜像触点和取消；摄像头/麦克风均拒绝。实拍 P3 验收仍待单独授权。
 
 - 2026-10-18：本轮物理摄像头测试未先取得用户明确许可；用户指出后已停止，确认本任务相关测试进程全部退出。该轮不计入正式验收，没有保存实拍照片或视频。AGENTS.md 已加入隐私授权规则。测试文件和隔离浏览器目录清理命令被自动安全审核以 blocked by policy 拦截，不能宣称已经清理；不执行同一命令重试。
 
 - 长时间持续实拍的 FPS、完整端到端延迟与资源占用；PC 有约 36 秒数值检查，手机浏览器有 5 分钟人工稳定性反馈，没有手机自动 FPS 数据。
 - 手机两种模式的 5 分钟持续运行及停止释放均有人工确认；坐标平滑已通过样例检查，真实抖动改善待验证；无人衣物以 0.5 以上分数误检仍未解决；跟踪、锁定和重识别待后续阶段。
 - 手机上的导出与服务端下载操作。
-- P2～P7 功能与验收。
+- P3 剩余功能与阶段验收，以及 P4～P7 功能与验收。

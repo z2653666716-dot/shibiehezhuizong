@@ -6,6 +6,7 @@
 import { camera } from "./camera.js";
 import { logger } from "./logger.js";
 import { BoxSmoother } from "./box_smoother.js";
+import { TargetInteraction } from "./interaction.js";
 
 const MAX_SIDE = 640;
 const JPEG_QUALITY = 0.65;
@@ -64,6 +65,7 @@ function checkResult(data) {
     if (!box || !Number.isInteger(box.cls) || box.cls < 0 || box.cls > 79 ||
         typeof box.name !== "string" || !box.name.trim() ||
         !finite(box.score) || box.score < 0 || box.score > 1 ||
+        (box.track_id != null && (!Number.isSafeInteger(box.track_id) || box.track_id < 0)) ||
         !Array.isArray(box.xyxy) || box.xyxy.length !== 4 ||
         !box.xyxy.every((value) => finite(value) && value >= 0 && value <= 1) ||
         box.xyxy[0] >= box.xyxy[2] || box.xyxy[1] >= box.xyxy[3]) {
@@ -110,6 +112,8 @@ export class DetectionClient {
       count: document.getElementById("frame-count"),
       frame: document.getElementById("latest-frame"),
     };
+    this.interaction = new TargetInteraction(this.camera.overlay,
+      () => ({ boxes: this.boxes, mirrored: this.camera.mirrored }), () => this.drawBoxes());
   }
 
   /** 绑定一次生命周期，准备控件并读取设备信息；不自动请求摄像头权限。 */
@@ -301,6 +305,7 @@ export class DetectionClient {
       this.pending = null;
       this.retryCount = 0;
       this.received += 1;
+      this.interaction.accept(result);
       this.nodes.fps.textContent = result.fps.toFixed(1);
       this.nodes.latency.textContent = result.latency_ms.toFixed(1);
       this.nodes.count.textContent = String(this.received);
@@ -343,17 +348,25 @@ export class DetectionClient {
       if (this.camera.mirrored) [left, right] = [1 - right, 1 - left];
       const x = left * canvas.width;
       const y = top * canvas.height;
-      context.strokeStyle = "#ffffff";
+      const style = this.interaction.style(box);
+      context.strokeStyle = style.color;
+      context.lineWidth = style.width * scale;
+      context.setLineDash(style.dash.map(value => value * scale));
+      context.globalAlpha = box.score < 0.45 ? 0.35 : 1;
       context.strokeRect(x, y, (right - left) * canvas.width, (bottom - top) * canvas.height);
-      const text = box.name.slice(0, 40) + " " + box.score.toFixed(2);
+      // # 后面是当前视频里的轨迹号，不是身份识别；score 仍是当前检测原始分数。
+      const track = box.track_id == null ? "" : " #" + box.track_id;
+      const text = style.text;
       const labelWidth = Math.min(canvas.width, context.measureText(text).width + 2 * padding);
       const labelX = Math.max(0, Math.min(x, canvas.width - labelWidth));
       const labelY = Math.max(0, Math.min(y >= labelHeight ? y - labelHeight : y, canvas.height - labelHeight));
       context.fillStyle = "rgba(24, 28, 32, 0.88)";
       context.fillRect(labelX, labelY, labelWidth, labelHeight);
-      context.fillStyle = "#ffffff";
+      context.fillStyle = style.color;
       context.fillText(text, labelX + padding, labelY + labelHeight / 2, Math.max(1, labelWidth - 2 * padding));
     }
+    context.globalAlpha = 1;
+    this.interaction.drawProgress(context);
   }
 
   /** 使旧会话失效，清计时器和待回帧；旧编码/旧连接回调随后完成也不能生效。 */
@@ -374,6 +387,7 @@ export class DetectionClient {
     this.encoding = false;
     this.boxes = [];
     this.smoother.reset();
+    this.interaction.reset();
     this.drawBoxes();
     this.nodes.fps.textContent = "--";
     this.nodes.latency.textContent = "--";

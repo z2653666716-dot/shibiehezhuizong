@@ -250,14 +250,15 @@ def run_check(args: argparse.Namespace, report: dict) -> None:
                     raise RuntimeError("页面不应自动开启视频源")
                 session.evaluate('document.getElementById("start-detection").click()')
                 session.wait("testClient.received >= " + str(args.warmup_frames), timeout=40)
-                first = session.evaluate("({count:testClient.received,time:performance.now()})")
+                first = session.evaluate("({count:testClient.received,time:performance.now(),track_ids:testClient.boxes.map(box=>box.track_id)})")
                 time.sleep(args.duration)
                 result = session.evaluate("""({
                   count:testClient.received,time:performance.now(),state:testClient.state,
                   boxes:testClient.boxes.length,server_fps:Number(document.getElementById("fps-value").textContent),
                   server_latency_ms:Number(document.getElementById("latency-value").textContent),
                   max_pending:testMaxPending,frames:syntheticFrames,
-                  smoothing_history:testClient.smoother.previous.length
+                  smoothing_history:testClient.smoother.previous.length,
+                  track_ids:testClient.boxes.map(box=>box.track_id)
                 })""")
                 elapsed = (result["time"] - first["time"]) / 1000
                 fps = (result["count"] - first["count"]) / elapsed
@@ -273,6 +274,10 @@ def run_check(args: argparse.Namespace, report: dict) -> None:
                     raise RuntimeError("在途帧数超过 1")
                 if result["smoothing_history"] != result["boxes"]:
                     raise RuntimeError("显示平滑未保存当前框，或混入已消失的目标")
+                if (not all(isinstance(value, int) and value > 0 for value in result["track_ids"]) or
+                        len(set(result["track_ids"])) != result["boxes"] or
+                        sorted(first["track_ids"]) != sorted(result["track_ids"])):
+                    raise RuntimeError("固定样例的轨迹号无效、重复或在采样前后改变")
                 if not all(frame["jpeg"] and max(frame["w"], frame["h"]) <= 640 for frame in result["frames"]):
                     raise RuntimeError("发送图像格式或尺寸不符合默认设置")
                 session.evaluate('document.getElementById("stop-detection").click();stopSyntheticSource()')
@@ -284,6 +289,7 @@ def run_check(args: argparse.Namespace, report: dict) -> None:
                     server_latency_ms=result["server_latency_ms"], detected_persons=result["boxes"],
                     maximum_inflight=result["max_pending"], painted_pixels=painted,
                     synthetic_tracks_released=True, smoothing_history_reset=True, physical_camera_access=False,
+                    track_ids=result["track_ids"], sample_track_ids_stable=True,
                 )
                 if fps < args.min_fps:
                     raise RuntimeError("样例流吞吐低于 --min-fps 设置")

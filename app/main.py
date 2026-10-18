@@ -30,7 +30,8 @@ from .config import AppConfig, PROJECT_ROOT, load_config
 from .detector import Detector
 from .ipcamera import IpCamera
 from .pipeline import MAX_JPEG_BYTES, Pipeline, PipelineError
-from .schemas import ErrorResponse, FrameMessage, IpCameraPull, IpCameraStart
+from .schemas import ErrorResponse, FrameMessage, IpCameraPull, IpCameraStart, LockRequest, SelectRequest
+from .session import SessionError
 
 
 LOG_DIR = PROJECT_ROOT / "outputs" / "logs"
@@ -193,7 +194,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             logger.info("服务启动 source=%s model=%s", settings.source, settings.det_model)
             # 权重加载也可能耗时，启动阶段交给后台线程执行。
             detector = await asyncio.to_thread(Detector, settings)
-            pipeline = Pipeline(detector)
+            pipeline = Pipeline(detector, settings)
             application.state.pipeline = pipeline
             application.state.ready = True
             logger.info("服务就绪 device=%s", detector.device_name)
@@ -262,6 +263,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         每张图只推理一次，所有观看者共用结果，不为慢观看者累积画面。
         """
         reader = application.state.ipcam_reader
+        pipeline = application.state.pipeline
+        tracker = None
         token = log_context.set((uuid4().hex[:12], "-"))
         messages = {
             "IPCAM_OPEN_FAILED": "无法打开 IP 视频源，请检查手机 App、地址和网络",
@@ -270,6 +273,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             "IPCAM_READ_FAILED": "读取 IP 视频源失败，请检查连接后重试",
         }
         try:
+            # 一次 IP 采集共用一个轨迹上下文，多位观看者只看结果，不重复更新轨迹。
+            tracker = pipeline.create_tracker()
             while True:
                 captured = await asyncio.to_thread(reader.read)
                 if captured is None:
@@ -286,7 +291,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 application.state.ipcam_sequence += 1
                 sequence = application.state.ipcam_sequence
                 log_context.set((log_context.get()[0], str(sequence)))
-                result = await application.state.pipeline.process_frame(image, sequence)
+                result = await pipeline.process_frame(image, sequence, tracker=tracker)
                 height, width = image.shape[:2]
                 async with application.state.ipcam_condition:
                     application.state.ipcam_packet = {
@@ -308,10 +313,13 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             try:
                 await asyncio.to_thread(reader.stop)
             finally:
-                async with application.state.ipcam_condition:
-                    application.state.ipcam_packet = None
-                    application.state.ipcam_condition.notify_all()
-                log_context.reset(token)
+                try:
+                    await pipeline.reset_tracker(tracker)
+                finally:
+                    async with application.state.ipcam_condition:
+                        application.state.ipcam_packet = None
+                        application.state.ipcam_condition.notify_all()
+                    log_context.reset(token)
 
     async def stop_ipcam_task() -> None:
         """取消处理任务、等待读取进程关闭并清除预览，由控制接口和服务退出调用。
@@ -393,6 +401,33 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         logger.warning("HTTP 参数无效 fields=%s", fields)
         return JSONResponse(error_body("BAD_REQUEST", "请求参数格式不正确"), 422)
 
+    @application.exception_handler(SessionError)
+    async def session_error(request: Request, error: SessionError):
+        """把锁定/身份操作失败转换为中文业务错误，页面可直接显示。"""
+        return JSONResponse(error_body(error.code, error.message), 409)
+
+    @application.post("/api/lock")
+    async def lock_target(action: LockRequest):
+        """当前会话内锁定指定轨迹；不会访问其他连接的相同轨迹号。"""
+        return await application.state.pipeline.session_action(action.session_id, "lock", action.track_id, action.seq)
+
+    @application.post("/api/select")
+    async def select_target(action: SelectRequest):
+        """按触点兜底锁定，坐标以原始画面为准。"""
+        return await application.state.pipeline.session_action(action.session_id, "select", action.x, action.y, action.seq)
+
+    @application.get("/api/identities")
+    async def list_identities(session_id: str):
+        """返回指定会话身份摘要；不暴露其他会话或内部特征。"""
+        items = await application.state.pipeline.session_action(session_id, "summaries")
+        return {"ok": True, "identities": [item.model_dump() for item in items]}
+
+    @application.delete("/api/identities/{identity_id}")
+    async def delete_identity(identity_id: str, session_id: str):
+        """删除会话内身份；不存在的会话或身份返回业务错误。"""
+        await application.state.pipeline.session_action(session_id, "delete", identity_id)
+        return {"ok": True}
+
     @application.get("/api/health")
     async def health(request: Request) -> JSONResponse:
         """框架在 GET /api/health 时传入请求，输出设备、模型和统计 JSON。
@@ -414,7 +449,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             "https": {"cert_file_present": settings.https_cert.is_file(),
                       "key_file_present": settings.https_key.is_file()},
             "mirror_config_present": (PROJECT_ROOT / "scripts/check_mirrors.ps1").is_file(),
-            "logs_url": "/api/logs", "stage": "P1",
+            "logs_url": "/api/logs", "stage": "P3",
+            "tracking": {"method": "ByteTrack", "scope": "per_video_session"},
         })
 
     @application.get("/api/ipcam/status")
@@ -542,6 +578,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         connection_id = uuid4().hex[:12]
         token = log_context.set((connection_id, "-"))
         sent_frames = 0
+        pipeline = tracker = None
         try:
             await websocket.accept(headers=[(b"x-request-id", connection_id.encode("ascii"))])
             logger.info("WS 连接建立")
@@ -553,6 +590,9 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 await websocket.send_json(error_body("SOURCE_MISMATCH", "当前为 IP 视频源模式，请使用对应观看接口"))
                 await websocket.close(code=1008)
                 return
+            pipeline = application.state.pipeline
+            # 每条推帧连接独立保存轨迹，不能用同一个跟踪器处理不同手机的画面。
+            tracker = pipeline.create_tracker()
             while True:
                 log_context.set((connection_id, "-"))
                 event = await websocket.receive()
@@ -581,7 +621,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                     await websocket.send_json(error_body("BAD_FRAME", "帧消息 JSON 或必填字段不正确"))
                     continue
                 try:
-                    result = await application.state.pipeline.process_message(message)
+                    result = await pipeline.process_message(message, tracker=tracker)
                 except PipelineError as error:
                     level = logging.ERROR if error.code == "INFERENCE_FAILED" else logging.WARNING
                     logger.log(level, "帧处理失败 code=%s message=%s", error.code, error.message)
@@ -607,8 +647,12 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 except (RuntimeError, WebSocketDisconnect):
                     pass
         finally:
-            logger.info("WS 连接结束 sent_frames=%s", sent_frames)
-            log_context.reset(token)
+            try:
+                if pipeline is not None:
+                    await pipeline.reset_tracker(tracker)
+            finally:
+                logger.info("WS 连接结束 sent_frames=%s", sent_frames)
+                log_context.reset(token)
 
     return application
 

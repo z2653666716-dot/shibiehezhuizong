@@ -7,6 +7,7 @@ P0 已通过；P1 的 PC 人物检测闭环已通过本次授权实机验收，�
 P1 的 PC 实机检查约 36 秒，30 秒计时窗口约 27.4 FPS；随后两种手机模式的 5 分钟人工连续运行检查也已完成，跟踪、锁定、重识别和更长期稳定性待后续阶段。
 本项目默认只检测人物；“person”类别结果不代表确认了具体身份。
 P2 手机接入已完成：两种手机模式均由用户确认连续 5 分钟运行正常且停止后释放，23 项测试通过。显示坐标平滑已通过样例检查，实拍改善程度未复测。提高实际输入像素后仍出现衣物误检，按用户要求保留默认参数并暂缓该问题，优先进入 P3 跟踪与锁定。
+P2 本地提交为 f2ac98e。P3 已接入 ByteTrack 轨迹编号并通过样例检查，长按锁定、目标选择和身份保持尚未完成。
 本机 CUDA Toolkit 13.3 保持不变，项目环境使用 PyTorch 自带的 CUDA 12.8 运行库。
 
 本次验收：Python 3.11.17、torch 2.9.1+cu128，样例图中检测到 4 个人物。
@@ -63,6 +64,7 @@ homework3/
 │  ├─ config.py             # 配置读取与检查
 │  ├─ schemas.py            # 检测数据和通信格式
 │  ├─ detector.py           # 可复用的 YOLO 单帧检测器
+│  ├─ tracker.py            # 每个视频会话独立的 ByteTrack 轨迹关联
 │  ├─ ipcamera.py           # 确认启动后读取网络视频，单帧共享内存与限时停止
 │  └─ pipeline.py           # 浏览器和 IP 视频源共用的检测流水线
 ├─ web/
@@ -95,7 +97,9 @@ homework3/
 │  ├─ test_ipcamera.py       # 只用本机样例流验证读取器和接口
 │  ├─ test_ipcam_page.py     # 拒绝设备权限的 Edge 页面验证
 │  ├─ test_box_smoother.py   # 用合成坐标检查平滑与重置边界
-│  └─ test_detection_review.py # 验证离线评分、输入校验和报告保护
+│  ├─ test_detection_review.py # 验证离线评分、输入校验和报告保护
+│  ├─ test_tracker.py        # 合成框检查真实 ByteTrack 生命周期
+│  └─ test_tracking_flow.py  # 会话隔离、取消清理与多浏览器连接检查
 ├─ certs/                    # 本机生成的证书和私钥，不提交 Git
 ├─ weights/yolo11n.pt        # 检测模型
 ├─ data/samples/test.jpg     # 官方单图样例，用于基础检测验收
@@ -112,6 +116,7 @@ homework3/
 ├─ outputs/ipcam/            # IP 视频源验证摘要，不包含画面
 ├─ outputs/viewer/           # 观看页面与原推帧模式的样例验证摘要
 ├─ outputs/detection_review/ # 离线诊断的输入校验与两种传输条件对照
+├─ outputs/tracking/         # 基础跟踪与固定样例流检查结果，不含实拍
 ├─ outputs/phone/            # 手机服务地址和人工接入检查结果，不包含画面
 ├─ outputs/logs/             # 正式运行时生成：运行日志与错误堆栈
 ├─ outputs/server/           # 服务验证报告与隔离保存的模拟错误日志
@@ -993,3 +998,59 @@ JPEG 质量 65 时，该外套的默认分数约 0.4871，部分候选能通过�
 --input-max-side（送入检测前保留的像素上限）、--jpeg-quality（省略为不额外压缩）、
 --match-iou（预测与粗标人物配对的重合门槛，改变评分规则，不改变模型本身）、--device cpu 或 0。
 建议先读样例清单，再读 main → run_evaluation → score_boxes，最后看测试。
+
+## 提高像素后的决定与 P3 基础跟踪
+
+按用户要求只再尝试一次：将实际输入最长边和模型内部尺寸都提高到 960，门槛保持 0.35。
+四张公开图仍检出六名真人、误检一件外套，外套分数约 0.6007；误检数量没有改善。
+报告 outputs/detection_review/higher_resolution_trial.json。
+因此保留实时最长边 640、模型内部尺寸 640 与门槛 0.35，衣物误检记为已知限制，暂缓优化并优先后续任务。
+
+P3 当前只实现轨迹编号，示例标签为 `person #1 0.85`：#1 是当前视频会话的轨迹号，0.85 是当前检测原始分数。
+编号不等于身份；暂停或重连会创建新的会话，不能据此声称长时重识别已经完成。
+
+新增 app/tracker.py：
+
+- Tracker(config) 加载已安装包内的 bytetrack.yaml，覆盖丢失保留帧数，不加载第二个 YOLO 模型或下载资源。
+- update(detections, width, height) 接收当前像素检测框，返回同数量、同顺序的归一化 Box。
+  按类别分别关联，利用 ByteTrack 返回的检测索引补上公开轨迹号，坐标和 score 仍来自本帧。
+  新目标尚未确认时 track_id 可为空；丢失的目标只在内部保留，不补画不存在的框。
+- reset() 清空轨迹与旧编号映射，但同一实例的公开计数继续递增，避免重置后复用旧选择指向的编号。
+  update 遇到图像尺寸改变会调用它；RLock 允许同一线程在 update 内安全再次进入 reset。
+- snapshot() 输出活动/暂时丢失的编号和处理帧数，不包含照片、特征或身份信息。
+
+app/pipeline.py 继续串行使用一个共享检测器：create_tracker 为路由创建独立状态；
+process_message/process_frame 接收可选 tracker，检测后由该对象关联并归一化。
+不传 tracker 时仍可用于单帧检测。reset_tracker 在线程中等待同一处理锁，再清除轨迹。
+这是因为取消 await/to_thread 的等待不会自动终止底层工作线程；必须防止迟到工作在清理后又写回旧轨迹。
+
+app/main.py 为每条 /ws/stream 连接创建一个 Tracker；一条连接结束只清理自己的状态。
+IP 模式每次确认启动创建一个 Tracker，由唯一后台任务更新，所有观看者共享已处理结果；停止后清理，重启是新会话。
+web/app.js 和 web/ipcam.js 校验可选整数 track_id，并在原有白框标签中显示编号，镜像和坐标平滑仍按原方式工作。
+GET /api/health 现标识 stage=P3、tracking.scope=per_video_session；这不代表 P3 的锁定与重识别验收通过。
+
+数据流：摄像头/样例帧 → 当前会话路由 → 共享 Pipeline/Detector → 会话 Tracker → 带轨迹号的 Box → 页面绘制。
+阅读顺序：tracker.py 的 update → tests/test_tracker.py → pipeline.py 的两个帧入口与 reset_tracker →
+main.py 的 stream/run_ipcam → 两个页面客户端的标签绘制。
+app/config.py 本次仅更新阶段注释，没有修改默认配置值。
+
+参数 TRACK_MAX_AGE 默认 30，单位是处理帧而不是秒；增大可延长短暂丢失后的匹配窗口，也可能增加错配。
+TRACKER 当前仅支持已安装的 bytetrack.yaml；模型门槛仍为 0.35，未为跟踪另行降低门槛。
+ByteTrack 的低分第二阶段只能使用实际传入的低分框；本轮合成框检查了该机制，没有宣称实时路径收到门槛以下的模型结果。
+
+实际检查：tests/test_tracker.py 的七项合成框检查先通过；接入后以下命令共 25 passed、3 warnings，40.53 秒：
+
+```powershell
+& .\envs\vitrack\python.exe -X utf8 -m pytest tests/test_tracker.py tests/test_tracking_flow.py tests/test_ipcamera.py tests/test_ipcam_page.py tests/test_box_smoother.py --basetemp=work/tracking_flow_pytest -q --disable-warnings --maxfail=1
+& .\envs\vitrack\python.exe -X utf8 scripts/verify_stream.py --duration 3 --report outputs/tracking/browser_stream_report.json
+```
+
+检查覆盖检测顺序变化、短暂丢失恢复、过期换号、类别/会话/尺寸隔离、取消后清理等待、
+双浏览器互不影响、IP 多观看者共享编号及页面标签/镜像/坏编号校验。
+第二条命令的固定样例 3.001 秒完成 68 帧，22.658 FPS，四个目标的编号在采样前后为 1/2/3/4；
+停止后合成轨道、连接、平滑历史和临时服务均释放。摄像头/麦克风权限均 denied，不能把它当成手机实拍性能。
+汇总 outputs/tracking/tracking_check_report.json。
+
+此前本任务启动的两个服务已重启为新版，手机 HTTPS 仍为 https://10.63.77.164:8443，
+电脑 IP 观看页仍为 http://localhost:8001/pc。重启检查均为 idle、处理帧数 0，没有自动开启任何采集。
+本轮手机不需要配合；再次使用隐私设备仍需对应范围的明确授权。下一组实现目标选择与长按锁定。

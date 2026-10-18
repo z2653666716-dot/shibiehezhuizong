@@ -148,12 +148,21 @@ def test_ipcam_page_lifecycle(viewer, sample_stream):
     summary = session.evaluate("""({
       boxes:ui.boxes.length,received:ui.received,pending:maximumPending,
       types:[...new Set(sentTypes)],videoHidden:document.getElementById("camera-video").hidden,
-      calls:deviceCalls,visible:!ui.preview.hidden,historyCount:ui.smoother.previous.length
+      calls:deviceCalls,visible:!ui.preview.hidden,historyCount:ui.smoother.previous.length,
+      trackIds:ui.boxes.map(box=>box.track_id)
     })""")
     assert summary["boxes"] == 4 and summary["received"] >= 3
     assert summary["pending"] == 1 and summary["types"] == ["next"]
     assert summary["videoHidden"] and summary["visible"] and summary["calls"] == 0
     assert summary["historyCount"] == summary["boxes"]
+    assert all(isinstance(track_id, int) and track_id > 0 for track_id in summary["trackIds"])
+    assert len(set(summary["trackIds"])) == len(summary["trackIds"])
+    assert session.evaluate("""(()=>{
+      const context=ui.overlayContext,original=context.fillText,labels=[];
+      try {context.fillText=(text,...args)=>{labels.push(text);return original.call(context,text,...args)};
+        ui.render();return ui.boxes.every(box=>labels.some(text=>text.includes('#'+box.track_id+' ')));
+      } finally {context.fillText=original}
+    })()""")
 
     mirror = session.evaluate("""(()=>{
       const control=document.getElementById("mirror-preview"),ctx=ui.overlayContext;
@@ -238,14 +247,15 @@ def test_ipcam_page_lifecycle(viewer, sample_stream):
       let rejected=0;
       for(const change of [
         value=>value.result.seq=2, value=>value.w=0, value=>value.img="https://external.invalid/picture",
-        value=>value.result.boxes=[{cls:0,name:"person",score:.9,xyxy:[.8,.2,.3,.9]}]
+        value=>value.result.boxes=[{cls:0,name:"person",score:.9,xyxy:[.8,.2,.3,.9]}],
+        value=>value.result.boxes=[{cls:0,name:"person",score:.9,xyxy:[.1,.2,.3,.9],track_id:"bad"}]
       ]){
         const value=structuredClone(packet);change(value);
         try{checkIpPacket(value)}catch{rejected++}
       }
       return rejected;
     })()""")
-    assert validation == 4
+    assert validation == 5
 
     # 健康接口返回未知模式时，页面应保持禁用，不能猜测改开本机摄像头。
     session.call("Page.addScriptToEvaluateOnNewDocument", {"source": """

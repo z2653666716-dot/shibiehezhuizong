@@ -153,6 +153,25 @@ class FrameResult(DataModel):
     # default_factory 每次创建一份新列表，防止两帧意外共用同一个可变列表。
     boxes: list[Box] = Field(default_factory=list)
     identities: list[IdentitySummary] = Field(default_factory=list)
+    session_id: str | None = None
+    events: list[dict] = Field(default_factory=list)
+
+
+class LockRequest(DataModel):
+    """锁定请求：会话随机凭据、目标轨迹号和用户看到的帧号。"""
+
+    session_id: str = Field(min_length=20, max_length=100)
+    track_id: int = Field(ge=0, strict=True)
+    seq: int = Field(ge=0, strict=True)
+
+
+class SelectRequest(DataModel):
+    """触点锁定请求：x/y 是还原镜像后的归一化坐标。"""
+
+    session_id: str = Field(min_length=20, max_length=100)
+    x: UnitValue
+    y: UnitValue
+    seq: int = Field(ge=0, strict=True)
 
 
 class IpCameraStart(DataModel):

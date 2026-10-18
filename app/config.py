@@ -46,7 +46,7 @@ class AppConfig(BaseModel):
     tracker: str = Field(default="bytetrack.yaml", min_length=1)
     track_max_age: int = Field(default=30, ge=1)
 
-    # 以下只集中保存后续阶段的参数，本阶段尚未实现跟踪、重识别或录制。
+    # 以下参数留给后续重识别与录制；基础帧间跟踪已由 tracker.py 接入。
     reid_model: Literal["mobilenet_v3_small", "color_histogram", "osnet_x0_25"] = "mobilenet_v3_small"
     reid_ema: float = Field(default=0.9, ge=0, lt=1)
     reid_tau_high: float = Field(default=0.65, ge=0, le=1)
