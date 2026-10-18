@@ -575,6 +575,11 @@
 
 ## 后续功能待验收
 
+- P5 功能实现：照片请求体最多6MiB，内存解析multipart/JPEG/PNG，校正EXIF，检测最大人物后翻转提特征；多人返回明确提示，无人/损坏/超大拒绝。
+  身份缩略图仅在会话内存，经带会话凭据的no-store接口提供；删除与停止会话一并清除，不生成用户照片或裁剪文件。
+  修复第三方Image.open补丁对损坏图尝试HEIF导入的问题，明确使用JPEG/PNG解析器。
+  pytest tests/test_photos.py tests/test_reid.py tests/test_interaction.py：6 passed、1 warning，35.07秒；含真实Edge长按回归，输入仅公开样例/合成图。
+
 - P4 实现与证据：本地官方 MobileNetV3-Small 权重 SHA256 前缀 047dcff4 校验通过，未使用随机初始化冒充预训练。
   reid.py 提供576维外观+128维HSV（8×4×4）融合与注册翻转，gallery.py 提供多模板和第一/第二名差距，会话完成EMA、连续确认、反向解绑、同一身份唯一可见绑定。
   原文 HSV 16×8×8 与128维互相矛盾，明确采用8×4×4，不改原方案文档。

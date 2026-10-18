@@ -204,7 +204,20 @@ class VideoSession:
 
     def summaries(self):
         """???????????????????????"""
-        return self.gallery.summaries({box.identity_id for box in self.boxes if box.identity_id})
+        return [summary.model_copy(update={"thumb": self.thumbnail_url(summary.id)
+                if self.gallery.items[summary.id].thumbnail else None})
+                for summary in self.gallery.summaries({box.identity_id for box in self.boxes if box.identity_id})]
+
+    def thumbnail_url(self, identity_id):
+        """输出当前会话专用缩略图地址，访问凭据不可用于其他视频。"""
+        return f"/api/identities/{identity_id}/thumbnail?session_id={self.token}"
+
+    def thumbnail(self, identity_id):
+        """返回该身份的内存 JPEG；不存在或已删除时拒绝，绝不从任意磁盘路径读取。"""
+        item = self.gallery.items.get(identity_id)
+        if item is None or item.thumbnail is None:
+            raise SessionError("IDENTITY_NOT_FOUND", "身份缩略图不存在或已清除")
+        return item.thumbnail
 
     def delete(self, identity_id):
         """??????/??????????????"""

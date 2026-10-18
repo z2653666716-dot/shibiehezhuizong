@@ -32,6 +32,7 @@ from .ipcamera import IpCamera
 from .pipeline import MAX_JPEG_BYTES, Pipeline, PipelineError
 from .schemas import ErrorResponse, FrameMessage, IpCameraPull, IpCameraStart, LockRequest, SelectRequest
 from .session import SessionError
+from .photos import MAX_PHOTO_BYTES
 
 
 LOG_DIR = PROJECT_ROOT / "outputs" / "logs"
@@ -428,6 +429,22 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         await application.state.pipeline.session_action(session_id, "delete", identity_id)
         return {"ok": True}
 
+    @application.post("/api/identities/photo")
+    async def upload_photo(request: Request, session_id: str):
+        """限量流式读入照片，全程内存解析；multipart 不经过自动磁盘暂存。"""
+        content = bytearray()
+        async for chunk in request.stream():
+            if len(content) + len(chunk) > MAX_PHOTO_BYTES:
+                raise SessionError("PHOTO_TOO_LARGE", "请选择不超过 6 MiB 的照片")
+            content.extend(chunk)
+        return await application.state.pipeline.register_photo(session_id, bytes(content), request.headers.get("content-type", ""))
+
+    @application.get("/api/identities/{identity_id}/thumbnail")
+    async def identity_thumbnail(identity_id: str, session_id: str):
+        """返回内存缩略图，禁止浏览器持久缓存；停止会话后立即不可访问。"""
+        content = await application.state.pipeline.session_action(session_id, "thumbnail", identity_id)
+        return Response(content, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
     @application.get("/api/health")
     async def health(request: Request) -> JSONResponse:
         """框架在 GET /api/health 时传入请求，输出设备、模型和统计 JSON。
@@ -449,7 +466,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             "https": {"cert_file_present": settings.https_cert.is_file(),
                       "key_file_present": settings.https_key.is_file()},
             "mirror_config_present": (PROJECT_ROOT / "scripts/check_mirrors.ps1").is_file(),
-            "logs_url": "/api/logs", "stage": "P4",
+            "logs_url": "/api/logs", "stage": "P5",
             "tracking": {"method": "ByteTrack", "scope": "per_video_session"},
             "reid": {"model": settings.reid_model, "high_threshold": settings.reid_tau_high,
                      "local_weights_present": settings.reid_weights.is_file(), "calibrated": False},

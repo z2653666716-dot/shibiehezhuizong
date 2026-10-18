@@ -13,6 +13,12 @@ export class TargetInteraction {
     this.press = null;
     this.busy = false;
     this.identitiesKey = "";
+    this.photoInput = document.getElementById("photo-file");
+    document.getElementById("upload-photo").onclick = () => {
+      if (this.session) this.photoInput.click();
+      else this.toast("请先开始检测，再选择照片");
+    };
+    this.photoInput.onchange = () => void this.uploadPhoto();
     canvas.tabIndex = 0;
     canvas.setAttribute("aria-label", "目标操作：短按选中，长按或按 L 锁定");
     canvas.addEventListener("pointerdown", event => this.down(event));
@@ -104,6 +110,7 @@ export class TargetInteraction {
   accept(result) {
     if (this.session !== result.session_id) { this.reset(); this.session = result.session_id || null; }
     this.seq = result.seq;
+    document.getElementById("upload-photo").disabled = !this.session;
     const identities = result.identities || [];
     const key = JSON.stringify(identities);
     if (key !== this.identitiesKey) {
@@ -115,6 +122,11 @@ export class TargetInteraction {
         const card = document.createElement("li");
         card.className = "identity-card " + (identity.online ? "online" : "offline");
         const name = document.createElement("button");
+        if (typeof identity.thumb === "string" && identity.thumb.startsWith("/api/identities/")) {
+          const image = document.createElement("img");
+          image.src = identity.thumb; image.alt = "登记照片缩略图";
+          image.width = 48; image.height = 64; card.append(image);
+        }
         name.textContent = identity.id + " · " + identity.name + (identity.online ? " · 在线" : " · 离线");
         name.onclick = () => {
           this.selected = this.readState().boxes.find(box => box.identity_id === identity.id)?.track_id ?? null;
@@ -145,6 +157,25 @@ export class TargetInteraction {
       text: box.name.slice(0, 40) + (box.track_id == null ? "" : " #" + box.track_id) + " " + box.score.toFixed(2) };
   }
 
+  /** 用户手动选照片后才传给同一电脑；FormData只存在内存，请求结束清理文件输入。 */
+  async uploadPhoto() {
+    const file = this.photoInput.files?.[0];
+    const session = this.session;
+    if (!file || !session) return;
+    if (file.size > 6 * 1024 * 1024 - 2048) {
+      this.toast("请选择小于 6 MiB 的 JPEG/PNG 照片"); this.photoInput.value = ""; return;
+    }
+    const form = new FormData(); form.append("photo", file);
+    try {
+      this.toast("正在提取照片中的人物…");
+      const body = await this.request("/api/identities/photo?session_id=" + encodeURIComponent(session),
+        { method: "POST", body: form });
+      if (session === this.session) this.toast(body.message);
+    } catch (error) {
+      if (session === this.session) this.toast(error.message);
+    } finally { this.photoInput.value = ""; }
+  }
+
   /** 画长按进度环；按屏幕位置映射画布，镜像前后触点均与手指保持一致。 */
   drawProgress(context) {
     if (!this.press) return;
@@ -171,5 +202,7 @@ export class TargetInteraction {
     this.cancel();
     document.getElementById("identity-list").replaceChildren();
     document.getElementById("identity-empty").hidden = false;
+    document.getElementById("upload-photo").disabled = true;
+    this.photoInput.value = "";
   }
 }

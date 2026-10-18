@@ -24,6 +24,7 @@ from .schemas import Box, ErrorResponse, FrameMessage, FrameResult
 from .tracker import Tracker
 from .session import VideoSession, SessionError
 from .reid import FeatureExtractor
+from .reid import crop_target
 
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,49 @@ class Pipeline:
                 if session is None:
                     raise SessionError("SESSION_GONE", "视频会话已结束，请开始检测后再操作")
                 return getattr(session, action)(*args)
+        return await asyncio.to_thread(run)
+
+    async def register_photo(self, session_id, content, content_type):
+        """输入已限大小的照片请求，在线程中解码、找最大人物、注册特征，返回提示与质量。"""
+        def run():
+            from .photos import decode_photo
+            with self._process_lock:
+                session = self.sessions.get(session_id)
+                if session is None:
+                    raise SessionError("SESSION_GONE", "请先开始检测，再选择照片")
+                frame = decode_photo(content, content_type)
+                height, width = frame.shape[:2]
+                scale = min(1, self.config.max_side / max(width, height))
+                if scale < 1:
+                    frame = cv2.resize(frame, (round(width * scale), round(height * scale)))
+                height, width = frame.shape[:2]
+                people = [item for item in self.detector.detect(frame) if item.cls == 0]
+                if not people:
+                    raise SessionError("NO_TARGET_IN_PHOTO", "照片中没有检测到人物")
+                target = max(people, key=lambda item: (item.xyxy[2] - item.xyxy[0]) * (item.xyxy[3] - item.xyxy[1]))
+                box = Box.from_detection(target, width, height)
+                crop = crop_target(frame, box.xyxy)
+                if crop is None:
+                    raise SessionError("PHOTO_TARGET_SMALL", "照片中的人物太小，请选择更清晰的人物照片")
+                if self.extractor is None:
+                    self.extractor = FeatureExtractor(self.config)
+                feature = self.extractor.extract([crop], flip=True)[0]
+                # 缩略图只编码成内存字节，不写 outputs/identities，也不缓存原照片。
+                thumb_height = 160
+                thumb_width = max(1, round(crop.shape[1] * thumb_height / crop.shape[0]))
+                ok, encoded = cv2.imencode(".jpg", cv2.resize(crop, (min(320, thumb_width), thumb_height)))
+                if not ok:
+                    raise SessionError("BAD_PHOTO", "缩略图处理失败，请换一张照片")
+                try:
+                    identity = session.gallery.register(feature, name="照片注册", source="photo", thumbnail=encoded.tobytes())
+                except ValueError as error:
+                    raise SessionError("IDENTITY_LIMIT", str(error)) from error
+                return {"ok": True, "identity_id": identity.id,
+                        "thumb": session.thumbnail_url(identity.id),
+                        "quality": {"detection_score": target.score, "person_count": len(people),
+                                    "crop_width": crop.shape[1], "crop_height": crop.shape[0]},
+                        "code": "MULTI_PERSON_PHOTO" if len(people) > 1 else "PHOTO_REGISTERED",
+                        "message": "照片有多个人，已自动登记最大的人物" if len(people) > 1 else "照片已登记，将尝试匹配画面中的人物"}
         return await asyncio.to_thread(run)
 
     async def reset_tracker(self, tracker: Tracker | None) -> None:
