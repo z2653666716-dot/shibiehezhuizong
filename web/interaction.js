@@ -117,6 +117,10 @@ export class TargetInteraction {
   async request(path, options = {}) {
     const response = await fetch(path, { cache: "no-store", signal: AbortSignal.timeout(15000), ...options });
     const body = await response.json();
+    // 只记录去掉查询凭据后的接口路径；请求编号可与电脑端同一操作关联，不序列化照片响应。
+    logger.record(response.ok ? "info" : "warn", `操作 ${path.split("?")[0]} 状态${response.status}`,
+      { source: "interaction", code: body.code || "ACTION_RESULT", seq: this.seq,
+        traceId: response.headers.get("X-Request-ID") });
     if (!response.ok || body.ok === false) {
       const error = new Error(body.message || "操作失败，请重试");
       error.code = body.code;
@@ -144,6 +148,10 @@ export class TargetInteraction {
   /** 从健康接口读取保存策略，默认禁用；页面操作不能绕过服务端禁止保存设置。 */
   configure(health) {
     this.interactionDiagnostics = health.diagnostics?.interaction_events === true;
+    this.hybridMode = health.identity?.mode === "hybrid";
+    document.querySelector(".photo-hint").textContent = this.hybridMode
+      ? "实验模式：支持清晰单人人脸照或上半身/全身照。转头看不清脸时结合行人外观与连续运动跟踪；停止后清除全部模板。"
+      : "当前按人物整体外观匹配，请使用上半身或全身清楚的单人照片；脸部特写尚不支持。停止检测后清除登记内容。";
     this.recordAllowed = health.recording?.allowed === true;
     document.getElementById("record-hint").textContent = this.recordAllowed
       ? "录制会在电脑保存带框视频。只有同意保存时才使用；停止检测会同时结束录制。"
@@ -236,10 +244,10 @@ export class TargetInteraction {
     }
     this.updatePhotoMatch(result);
     const target = identities[0];
-    const matched = result.boxes?.some(box => box.state === "locked");
+    const matched = result.boxes?.find(box => box.state === "locked");
     const confirming = result.boxes?.some(box => box.state === "candidate");
     document.getElementById("target-status").textContent = !target ? "当前尚未登记跟踪目标。"
-      : matched ? `${target.id}：当前身份匹配通过。`
+      : matched ? matched.verification === "continuity" ? `${target.id}：连续跟踪中，人脸暂未重新确认。` : `${target.id}：当前身份匹配通过。`
       : confirming ? `${target.id}：正在连续确认身份，尚未完成锁定。`
       : result.boxes?.some(box => box.cls === 0) ? `${target.id}：画面有人，但身份暂未确认；继续搜索，不代表你已离开。`
       : `${target.id}：当前未检出人物，继续等待。`;
@@ -252,7 +260,7 @@ export class TargetInteraction {
 
   /** 输入框，输出样式与标签；分数保持当前模型值，颜色只表达交互/匹配状态。 */
   style(box) {
-    if (box.state === "locked") return { color: "#41e18b", width: 3, dash: [], text: box.identity_id };
+    if (box.state === "locked") return { color: "#41e18b", width: 3, dash: [], text: box.identity_id + (box.verification === "continuity" ? " 跟踪中" : "") };
     if (box.state === "candidate") return { color: "#41e18b", width: 2, dash: [6, 4], text: "识别中…" };
     return { color: box.track_id === this.selected ? "#ffe166" : "#ffffff", width: 2, dash: [],
       text: box.name.slice(0, 40) + (box.track_id == null ? "" : " #" + box.track_id) + " " + box.score.toFixed(2) };

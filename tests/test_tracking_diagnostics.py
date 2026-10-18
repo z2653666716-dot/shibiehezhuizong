@@ -81,3 +81,4 @@ def test_diagnostic_endpoint_restricts_content_and_session(service, records):
         assert client.post("/api/interaction-events", json=event).json()["recorded"] is False
         assert tracker.token not in json.dumps(records)
         assert client.get("/api/health").json()["diagnostics"]["identity_rejection_reasons"] is True
+        assert logging.getLogger("uvicorn.access").disabled  # 原始查询凭据不能被重复访问行打印。

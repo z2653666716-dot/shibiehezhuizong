@@ -29,6 +29,9 @@ def collect_files(root=ROOT):
     named = ["README.md", "PROGRESS.md", "AGENTS.md", ".gitignore", ".env.example", "requirements.txt", "requirements.lock.txt",
              "web/icons/icon-192.png", "web/icons/icon-512.png",
              "weights/yolo11n.pt", "weights/mobilenet_v3_small-047dcff4.pth", "weights/yolo11s.pt",
+             "weights/osnet_x0_25_msmt17.onnx", "weights/face_detection_yunet_2023mar.onnx",
+             "weights/face_recognition_sface_2021dec.onnx",
+             "docs/licenses/yunet_license.txt", "docs/licenses/sface_license.txt",
              "data/samples/test.jpg", "data/samples/detection_cases.json", "data/samples/clothing/README.md",
              "data/samples/clothing/closet_clothes.jpg", "data/samples/clothing/window_jacket.jpg", "data/samples/clothing/gallery_jacket.jpg"]
     files.update(root / name for name in named if (root / name).is_file() and not (root / name).is_symlink())

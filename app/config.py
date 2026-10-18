@@ -59,13 +59,27 @@ class AppConfig(BaseModel):
     reid_w_color: float = Field(default=0.15, ge=0, le=1)
     reid_weights: Path = Path("weights/mobilenet_v3_small-047dcff4.pth")
     reid_calibrated: bool = False
+    # 实验模式必须明确启用；main基线仍使用appearance模式。
+    identity_mode: Literal["appearance", "hybrid"] = "appearance"
+    identity_device: Literal["cpu", "cuda"] = "cpu"
+    person_weights: Path = Path("weights/osnet_x0_25_msmt17.onnx")
+    face_detector_weights: Path = Path("weights/face_detection_yunet_2023mar.onnx")
+    face_recognizer_weights: Path = Path("weights/face_recognition_sface_2021dec.onnx")
+    face_match_threshold: float = Field(default=0.45, ge=0, le=1)
+    face_reject_threshold: float = Field(default=0.10, ge=-1, le=1)
+    face_min_side: int = Field(default=32, ge=16)
+    face_min_sharpness: float = Field(default=25, ge=0)
+    body_match_threshold: float = Field(default=0.75, ge=0, le=1)
+    body_hold_threshold: float = Field(default=0.55, ge=0, le=1)
+    identity_hold_seconds: float = Field(default=2, ge=0, le=5)
     identity_limit: int = Field(default=20, ge=1, le=100)
     allow_media_save: bool = False
     jpeg_quality: float = Field(default=0.65, ge=0, le=1)
     max_side: int = Field(default=640, ge=32, le=2048)
     record_fps: int = Field(default=15, ge=1, le=60)
 
-    @field_validator("https_cert", "https_key", "det_model", "reid_weights", mode="before")
+    @field_validator("https_cert", "https_key", "det_model", "reid_weights", "person_weights",
+                     "face_detector_weights", "face_recognizer_weights", mode="before")
     @classmethod
     def resolve_project_path(cls, value: object) -> Path:
         """输入文件路径，输出绝对路径；由 Pydantic 在字段转换前自动调用。
@@ -112,6 +126,10 @@ class AppConfig(BaseModel):
             raise ValueError("DET_IMGSZ 应为 32 的倍数，例如 480、640 或 800")
         if self.reid_tau_low >= self.reid_tau_high:
             raise ValueError("REID_TAU_LOW 必须小于 REID_TAU_HIGH")
+        if self.face_reject_threshold >= self.face_match_threshold or self.body_hold_threshold > self.body_match_threshold:
+            raise ValueError("拒绝/维持门槛必须低于重新确认门槛")
+        if self.identity_mode == "hybrid" and (self.reid_model != "osnet_x0_25" or self.tracker != "botsort.yaml"):
+            raise ValueError("hybrid实验需要REID_MODEL=osnet_x0_25与TRACKER=botsort.yaml")
         if not math.isclose(self.reid_w_appear + self.reid_w_color, 1.0, abs_tol=1e-6):
             raise ValueError("REID_W_APPEAR 与 REID_W_COLOR 相加必须为 1")
         if self.target_classes is not None:

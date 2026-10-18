@@ -61,14 +61,15 @@ class Gallery:
             reason = "FUSED_SCORE_LOW"
         elif anchor_score < self.config.reid_tau_high:
             reason = "ANCHOR_SCORE_LOW"
-        if len(feature) == 704 and len(anchor) == 704:
+        if len(feature) in {704, 640} and len(feature) == len(anchor):
+            split = len(feature) - 128
             # 权重为0时对应分量是零向量，不计算其余弦，避免除以0。
             if self.config.reid_w_appear:
-                values["appearance_score"] = cosine(feature[:576], anchor[:576])
+                values["appearance_score"] = cosine(feature[:split], anchor[:split])
                 if reason == "ACCEPTED" and values["appearance_score"] < self.config.reid_tau_high:
                     reason = "APPEARANCE_SCORE_LOW"
             if self.config.reid_w_color:
-                values["color_score"] = cosine(feature[576:], anchor[576:])
+                values["color_score"] = cosine(feature[split:], anchor[split:])
                 if reason == "ACCEPTED" and values["color_score"] < self.config.reid_color_min:
                     reason = "COLOR_SCORE_LOW"
         if identity.distractors:

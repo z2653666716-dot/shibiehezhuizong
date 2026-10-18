@@ -35,7 +35,9 @@ def read_events(paths):
                     event["check"] = {key: value for key, value in raw["check"].items()
                                       if key in {"accepted", "reason", "score", "anchor_score", "high", "color_min",
                                                  "margin", "appearance_score", "color_score", "nearest_other", "other_margin",
-                                                 "best", "second"} and isinstance(value, (str, int, float, bool))}
+                                                 "best", "second", "body_score", "face_score", "face_quality", "mode",
+                                                 "face_threshold", "body_threshold", "body_hold_threshold"}
+                                      and isinstance(value, (str, int, float, bool, type(None)))}
                 if isinstance(raw.get("client"), dict):
                     event["client"] = {key: value for key, value in raw["client"].items()
                                        if key in {"event", "seq", "track_id", "reason", "pointer"}

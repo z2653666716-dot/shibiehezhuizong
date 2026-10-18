@@ -90,6 +90,8 @@ Pydantic模型拒绝无效数字、错误字段和不一致状态。例如绿框
 
 ## 脚本与参数
 
+实验版阅读补充：`hybrid_session.py`把身份重新确认与连续跟踪分开；`faces.py`输出人脸质量和专用特征，`person_features.py`输出行人特征，`onnx_backend.py`在不改权重的前提下规范导出元信息并报告实际后端。仅当`identity_mode=hybrid`时由pipeline接入。详细数据流、入口与验收步骤见tracking_upgrade.md。
+
 - `calibrate_reid.py`：输入同人/异人图片对，输出相似度、TAR/FAR、CSV和分布图；公开增强模式仅诊断，不自动改门槛。
 - `bench.py`：输入本地模型/尺寸/设备组合，预热后同步测检测器FPS，不包括网络或ReID。
 - `verify_stream.py`：用公开样例合成视频验证真实浏览器/后端，输出帧数、在途上限、内存采样和释放结论，权限始终拒绝。

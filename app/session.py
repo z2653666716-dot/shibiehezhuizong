@@ -89,12 +89,12 @@ class VideoSession:
             self.diagnostic("candidate_rejected", track_id=track_id, check=assessment)
             track.last_rejection, track.rejection_frame = reason, self.frame_count
 
-    def update(self, detections, width, height):
+    def update(self, detections, width, height, frame=None):
         """输入当前检测与尺寸，输出原始跟踪框；空帧也推进失踪生命周期。"""
         if self.size != (width, height):
             self.observations.clear()
             self.size = (width, height)
-        self.boxes = self.tracker.update(detections, width, height)
+        self.boxes = self.tracker.update(detections, width, height, image=frame, extractor=self.extractor) if frame is not None else self.tracker.update(detections, width, height)
         self.frame_count += 1
         self.updated_at = monotonic()
         for box in self.boxes:

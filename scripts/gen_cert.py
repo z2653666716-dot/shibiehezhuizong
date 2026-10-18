@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import socket
 import ssl
+import psutil
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -25,11 +26,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 def local_ips() -> list[str]:
     """查询本机网卡的 IPv4 地址，返回去重列表，供生成证书和启动脚本选择地址。
 
-    这里只查询本机名称，不连接外部服务；多网卡时保留全部候选，不猜手机使用哪张网卡。
+    这里只枚举本机网卡地址，不连接外部服务或访问定位；多网卡时保留全部候选，不猜手机使用哪张网卡。
     """
     addresses = set()
-    for entry in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-        address = ipaddress.ip_address(entry[4][0])
+    # 只按电脑名称查DNS会漏掉Windows移动热点网卡；直接枚举本机已分配地址，不访问定位/WLAN权限。
+    candidates = [item.address for items in psutil.net_if_addrs().values() for item in items
+                  if item.family == socket.AF_INET]
+    for candidate in candidates:
+        address = ipaddress.ip_address(candidate)
         if not address.is_loopback and not address.is_link_local and not address.is_unspecified:
             addresses.add(str(address))
     return sorted(addresses, key=ipaddress.ip_address)

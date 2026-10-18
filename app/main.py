@@ -104,6 +104,8 @@ def configure_logging() -> None:
     app_logger.addHandler(console)
     app_logger.setLevel(LOG_LEVEL)
     app_logger.propagate = False
+    # 本应用的HTTP中间件只记录path；关闭Uvicorn重复访问行，避免缩略图URL的会话查询凭据落入终端。
+    logging.getLogger("uvicorn.access").disabled = True
     # Uvicorn 保留原来的终端输出，同时将启动/网络层错误写入相同文件。
     for handler in file_handlers:
         server_logger.addHandler(handler)
@@ -212,7 +214,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             logger.info("服务结束 processed_frames=%s", pipeline.processed_frames)
             # 文件处理器留至进程退出时由 logging 关闭，保留尚在收尾的后台错误。
 
-    application = FastAPI(title="ViTrack", version="0.2.2", lifespan=lifespan)
+    application = FastAPI(title="ViTrack", version="0.3.0-experimental", lifespan=lifespan)
     application.state.ready = False
     application.state.pipeline = None
     application.state.settings = None
@@ -492,9 +494,17 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                       "key_file_present": settings.https_key.is_file()},
             "mirror_config_present": (PROJECT_ROOT / "scripts/check_mirrors.ps1").is_file(),
             "logs_url": "/api/logs", "stage": "P7",
-            "tracking": {"method": "ByteTrack", "scope": "per_video_session"},
+            "tracking": {"method": "BoT-SORT" if settings.tracker == "botsort.yaml" else "ByteTrack", "scope": "per_video_session"},
+            "identity": {"mode": settings.identity_mode, "experimental": settings.identity_mode == "hybrid",
+                         "face_method": "YuNet+SFace" if settings.identity_mode == "hybrid" else None,
+                         "body_method": settings.reid_model, "face_threshold": settings.face_match_threshold,
+                         "continuity_grace_seconds": settings.identity_hold_seconds,
+                         "encoder_device": {
+                             "body": getattr(getattr(pipeline.extractor, "person_encoder", None), "execution_device", None),
+                             "face": getattr(pipeline.face_encoder, "execution_device", None)}},
             "reid": {"model": settings.reid_model, "high_threshold": settings.reid_tau_high,
-                     "local_weights_present": settings.reid_weights.is_file(), "calibrated": settings.reid_calibrated},
+                     "local_weights_present": (settings.person_weights if settings.reid_model == "osnet_x0_25" else settings.reid_weights).is_file(), "calibrated": settings.reid_calibrated,
+                     "experimental_body_match_threshold": settings.body_match_threshold if settings.identity_mode == "hybrid" else None},
             "field_acceptance": {"live_reid": "pending", "android_install": "pending"},
             "recording": {"allowed": settings.allow_media_save},
             "capture": {"max_side": settings.max_side, "jpeg_quality": settings.jpeg_quality},

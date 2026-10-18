@@ -68,6 +68,7 @@ class Box(DataModel):
     identity_id: Annotated[str, Field(min_length=1)] | None = None
     state: Literal["none", "candidate", "locked"] = "none"
     sim: SimilarityValue | None = None
+    verification: Literal["none", "face", "body", "continuity"] = "none"
 
     @field_validator("xyxy")
     @classmethod

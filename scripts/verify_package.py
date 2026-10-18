@@ -23,8 +23,8 @@ from websockets.sync.client import connect
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def verify(archive_path, report_path):
-    """输入ZIP和报告路径，校验安全路径/摘要，输出真实模型/锁定/保存限制的检查结果。"""
+def verify(archive_path, report_path, identity_mode="appearance"):
+    """输入ZIP、报告路径和可选身份模式，校验摘要，输出对应真实模型/锁定/保存限制结果。"""
     directory = ROOT / "work/package_checks" / uuid4().hex
     directory.mkdir(parents=True, exist_ok=False)
     with zipfile.ZipFile(archive_path) as archive:
@@ -45,12 +45,16 @@ def verify(archive_path, report_path):
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
     environment.update(SOURCE="ws", ALLOW_MEDIA_SAVE="false", DET_MODEL="weights/yolo11n.pt",
-                       REID_WEIGHTS="weights/mobilenet_v3_small-047dcff4.pth", REID_MODEL="mobilenet_v3_small")
+                       REID_WEIGHTS="weights/mobilenet_v3_small-047dcff4.pth",
+                       IDENTITY_MODE=identity_mode, IDENTITY_DEVICE="cpu",
+                       REID_MODEL="osnet_x0_25" if identity_mode == "hybrid" else "mobilenet_v3_small",
+                       TRACKER="botsort.yaml" if identity_mode == "hybrid" else "bytetrack.yaml")
     server = None
     report = {"archive": str(archive_path), "archive_sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
               "files_verified": len(manifest["files"]), "used_existing_python_environment": True,
               "fresh_dependency_installation_performed": False, "physical_camera_access": False,
               "user_media_saved": False, "extracted_directory": str(source)}
+    report["identity_mode"] = identity_mode
     try:
         with (directory / "service.txt").open("w", encoding="utf-8") as output:
             server = subprocess.Popen([sys.executable, "-X", "utf8", "-m", "uvicorn", "app.main:app",
@@ -72,6 +76,7 @@ def verify(archive_path, report_path):
                         raise TimeoutError("解压服务未就绪")
                     time.sleep(.2)
                 assert health["source"] == "ws" and health["recording"]["allowed"] is False
+                assert health["identity"]["mode"] == identity_mode
                 assert health["processed_frames"] == 0
                 for route in ("/pc", "/static/manifest.webmanifest", "/sw.js", "/static/icons/icon-512.png"):
                     assert client.get(route).status_code == 200
@@ -112,8 +117,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("archive", nargs="?", type=Path, default=ROOT / "outputs/delivery/vitrack_source.zip")
     parser.add_argument("--report", type=Path, default=ROOT / "outputs/delivery/package_check.json")
+    parser.add_argument("--identity-mode", choices=["appearance", "hybrid"], default="appearance")
     args = parser.parse_args()
-    print(json.dumps(verify(args.archive, args.report), ensure_ascii=False, indent=2))
+    print(json.dumps(verify(args.archive, args.report, args.identity_mode), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

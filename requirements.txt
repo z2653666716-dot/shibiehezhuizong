@@ -10,6 +10,9 @@ uvicorn[standard]>=0.34,<1
 python-multipart>=0.0.20,<1
 python-dotenv>=1.1,<2
 opencv-python>=4.11,<5
+# 实验身份模型可复用PyTorch的CUDA12/cuDNN9；无GPU时同包仍可使用CPU执行器。
+onnxruntime-gpu==1.23.2
+onnx>=1.17,<2
 numpy>=2.0,<3
 pillow>=11,<13
 cryptography>=45,<49

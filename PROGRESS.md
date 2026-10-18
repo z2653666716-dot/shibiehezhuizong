@@ -599,6 +599,23 @@
 - 公开/合成验证：触摸菜单回归1 passed，20.19秒；身份与单目标回归16 passed，10.90秒；诊断接口/照片页面/交互/PWA组合5 passed，69.41秒。最终完整命令pytest tests --basetemp=work/diagnostic_full_suite -q --disable-warnings --maxfail=1，60 passed、1 warning，155.69秒，退出0。均无用户实拍输入。
 - 后续优先更换身份保持方案，在feature/face-assisted-reid进行，main与v0.2.1-baseline保留可回退版本。已核实本机OpenCV包含YuNet/SFace接口，Ultralytics包含BoT-SORT外观钩子；OSNet/MSMT17候选资源已查询，尚未接入或宣称通过现场验收。旧MobileNet的同图增强诊断不能代替跨姿态/尺度测试。
 
+## 身份保持升级实验计划（先记录替代方案，再实施）
+
+- 0.2.2诊断修复已提交c4e80da并实际推送main与fix/photo-feedback，60项完整检查通过。实验分支feature/face-assisted-reid已合并该版本，后续身份方法不直接写入main。
+- 原MobileNetV3使用通用ImageNet分类特征，逐帧0.90接受线会在姿态/尺度变化时撤销绑定，不能满足本次“记住同一个人”的验收目标。计划使用OSNet行人特征参与BoT-SORT关联，YuNet检测与SFace专用人脸特征补充身份依据，并区分连续跟踪、可靠身份观测和短时不确定状态。
+- OSNet候选为anriha/osnet_x0_25_msmt17的固定提交ONNX，发布者标注MSMT17与MIT，模型卡缺少训练记录；该来源与限制须保留，不把文件名当作已核验的训练成绩。YuNet/SFace来自OpenCV Zoo官方固定文件，摘要从Git LFS元信息核对。资源只下载到本地，不在处理画面时联网。
+- 人脸和身体模板只在会话内存中保存；只在归属明确且可靠确认时增加有限模板，不能靠一个旧轨迹号不断收集人脸。跨人交叉时不确定则等待确认，不伪造持续识别。需要新的现场授权才能测试，本次未再访问设备。
+- OSNet候选首次实测：固定摘要下载成功，但本机OpenCV DNN在Gemm_474遇到K=8/128维度错误，零图前向失败，不将其记为可运行模型。改用专门的ONNX Runtime读取原始模型输入声明并执行；仅安装到项目vitrack环境。YuNet/SFace仍使用其官方OpenCV接口，不静默替换整个技术栈。
+- 后续查明该ONNX固定batch=16，最初误用batch=1造成尺寸错误，不据此断言OpenCV或模型本身损坏。已按真实输入声明填充16人一批，并丢弃填充输出，实际前向与公开照片匹配通过。
+- CPU编码器的公开640样例20帧检查：2.040秒、9.803帧/秒、平均101.59ms，1个目标保持绑定；这是固定图吞吐而非手机实测，低于原方案15FPS目标。因此在实验分支尝试ONNX Runtime CUDA（与已核验的PyTorch CUDA12/cuDNN9库配合），保留CPU回退及实际后端信息；不以降低身份门槛换速度。更换执行器不改变权重、预处理或身份判断规则。
+- CUDA原始图20帧实测为4.224帧/秒、平均236.28ms，虽两个执行器确实为cuda:0，但比CPU慢，不能声称已加速。运行器指出旧导出把常量权重列作可覆盖输入、抑制图优化；下一步仅规范冻结图的输入元信息并移除固定batch填充，以原图数值一致性检查验证，不调整权重、分数或识别门槛。若仍慢，保留实测更快的CPU后端。
+- 已实现：HybridSession将可靠人脸、行人外观与连续运动分开；脸部特写可直接注册SFace，缺少YOLO人物框时使用真实YuNet分数的person-face观测。只有头部的输入不冒充全身特征；侧脸观测与同一轨迹连续、无跨人歧义时维持“跟踪中”，中断/清晰正脸矛盾/交叠歧义需要重确认。仅在可靠确认后有限补充模板，不用低分侧脸自我污染。
+- 新增合成状态检查，覆盖姿势/大小变化、头部侧脸连续性、相同衣服不同脸拒绝、离开后必须取得新脸证据、短时无可靠观测、无轨迹号新人物也参与歧义、取消清空模板。真实公开bus人脸裁剪照片登记→视频自动绿框→改变输入分辨率后恢复同ID通过；隔离Edge经实际照片接口登记人脸特写、常驻提示与缩略图、绿框和停止清理也通过。公开测试不是用户现场数据，不代替实际侧脸/交叉成功率。
+- 最终完整回归：pytest tests --basetemp=work/hybrid_release_suite -q --disable-warnings --maxfail=1，68 passed、1 warning，178.28秒。末尾加强近距离头部/侧脸策略与模板分类后，pytest tests/test_hybrid_identity.py tests/test_hybrid_page.py --basetemp=work/hybrid_profile_final -q --disable-warnings --maxfail=1，8 passed、1 warning，30.22秒。没有重新打开摄像头或保存用户图片。
+- 输入元信息规范后，CPU行人四人前向7.410ms、原16人与动态批特征余弦1.0；CUDA同任务227.769ms，SFace CUDA与OpenCV特征余弦同为1.0，未获得速度优势。选择IDENTITY_DEVICE=cpu，原权重文件不改；动态批完整640公开20帧为12.636FPS、平均78.69ms、1个目标保持绑定，仍低于15FPS目标，详见outputs/identity三份独立数值报告。
+- 依赖只安装到项目环境，新增ONNX/ONNX Runtime并保留本机实际CUDA依赖版本，锁文件不引用本机work/wheels路径。3份模型SHA256、许可文本、来源限制与启动/阅读/验收说明均保留；包不含用户照片、证书、环境或输出。
+- 新脚本run_identity.ps1临时启用实验设置，不改.env；已用当前WLAN地址进行CheckOnly通过。当前系统未分配192.168.137.1，热点地址检查如实拒绝，未自动开启热点或调用定位/WLAN权限；热点重新开启后再进行手机验收。
+
 ## 后续功能待验收
 
 - 源码包首次独立解压运行检查通过：77个清单文件摘要一致，包内YOLO与MobileNet实际加载，公开样例检出4人，锁定接口及绿框状态通过，默认录制拒绝，静态/PWA资源可访问，临时服务已关闭；未使用设备、未保存实拍内容。

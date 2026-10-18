@@ -25,6 +25,8 @@ from .tracker import Tracker
 from .session import VideoSession, SessionError
 from .reid import FeatureExtractor
 from .reid import crop_target
+from .hybrid_session import HybridSession
+from .faces import FaceEncoder
 
 
 logger = logging.getLogger(__name__)
@@ -69,14 +71,24 @@ class Pipeline:
         self.processed_frames = 0
         self.sessions = {}
         self.extractor = None
+        self.face_encoder = None
         self.recommended_max_side = self.config.max_side
         self.slow_frames = 0
 
     def create_tracker(self) -> VideoSession:
         """无输入，输出新的会话跟踪器；路由为每条浏览器连接或一次 IP 采集创建一个。"""
-        session = VideoSession(self.config)
+        session = HybridSession(self.config) if self.config.identity_mode == "hybrid" else VideoSession(self.config)
         self.sessions[session.token] = session
         return session
+
+    def prepare_hybrid(self, session):
+        """在已有处理锁内加载一次本地行人/人脸模型，并给会话复用；不联网或访问设备。"""
+        if self.extractor is None:
+            self.extractor = FeatureExtractor(self.config)
+        if self.face_encoder is None:
+            self.face_encoder = FaceEncoder(self.config)
+        session.extractor, session.face_encoder = self.extractor, self.face_encoder
+        self.extractor.person_cache.clear()
 
     async def session_action(self, session_id, action, *args):
         """输入随机会话凭据与操作名，在线程中串行执行，输出操作结果。"""
@@ -102,6 +114,13 @@ class Pipeline:
                 except SessionError as error:
                     session.diagnostic("photo_rejected", reason=error.code)
                     raise
+                if isinstance(session, HybridSession):
+                    self.prepare_hybrid(session)
+                    try:
+                        return session.register_photo_frame(frame, self.detector)
+                    except SessionError as error:
+                        session.diagnostic("photo_rejected", reason=error.code)
+                        raise
                 height, width = frame.shape[:2]
                 scale = min(1, self.config.max_side / max(width, height))
                 if scale < 1:
@@ -153,6 +172,8 @@ class Pipeline:
         """清理线程取得同一处理锁，再丢弃轨迹；不会触及其他会话的跟踪器。"""
         with self._process_lock:
             tracker.reset()
+            if self.extractor is not None:
+                self.extractor.person_cache.clear()
             self.sessions.pop(getattr(tracker, "token", None), None)
 
     async def process_message(self, message: FrameMessage, tracker: Tracker | VideoSession | None = None) -> FrameResult:
@@ -189,9 +210,14 @@ class Pipeline:
             try:
                 detections = self.detector.detect(frame)
                 # 跟踪状态由调用方的会话持有；共享的只是模型与处理锁，不把不同视频混在一起。
-                boxes = tracker.update(detections, width, height) if tracker is not None else [
+                if isinstance(tracker, HybridSession):
+                    self.prepare_hybrid(tracker)
+                    detections = tracker.prepare_frame(frame, detections)
+                    boxes = tracker.update(detections, width, height, frame)
+                else:
+                    boxes = tracker.update(detections, width, height) if tracker is not None else [
                     Box.from_detection(item, width, height) for item in detections
-                ]
+                    ]
                 if isinstance(tracker, VideoSession):
                     if self.extractor is None:
                         self.extractor = FeatureExtractor(self.config)
