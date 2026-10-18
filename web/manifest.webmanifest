@@ -1,0 +1,10 @@
+{
+  "id": "/", "name": "ViTrack 视觉目标跟踪", "short_name": "ViTrack",
+  "description": "手机采集、电脑检测与外观匹配；离线仅可打开界面。", "lang": "zh-CN",
+  "start_url": "/", "scope": "/", "display": "standalone",
+  "background_color": "#101820", "theme_color": "#101820",
+  "icons": [
+    {"src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+    {"src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+  ]
+}

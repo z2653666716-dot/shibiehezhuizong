@@ -30,7 +30,7 @@ from .config import AppConfig, PROJECT_ROOT, load_config
 from .detector import Detector
 from .ipcamera import IpCamera
 from .pipeline import MAX_JPEG_BYTES, Pipeline, PipelineError
-from .schemas import ErrorResponse, FrameMessage, IpCameraPull, IpCameraStart, LockRequest, SelectRequest
+from .schemas import ErrorResponse, FrameMessage, IpCameraPull, IpCameraStart, LockRequest, SelectRequest, RecordRequest
 from .session import SessionError
 from .photos import MAX_PHOTO_BYTES
 
@@ -212,7 +212,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             logger.info("服务结束 processed_frames=%s", pipeline.processed_frames)
             # 文件处理器留至进程退出时由 logging 关闭，保留尚在收尾的后台错误。
 
-    application = FastAPI(title="ViTrack", version="0.1.0", lifespan=lifespan)
+    application = FastAPI(title="ViTrack", version="0.2.0", lifespan=lifespan)
     application.state.ready = False
     application.state.pipeline = None
     application.state.settings = None
@@ -286,7 +286,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                     continue
                 settings = application.state.settings
                 image, jpeg = await asyncio.to_thread(
-                    prepare_ipcam_frame, captured.image, settings.max_side, settings.jpeg_quality,
+                    prepare_ipcam_frame, captured.image, pipeline.recommended_max_side, settings.jpeg_quality,
                 )
                 # 结果序号跨多次开始/停止递增，旧会话的 after 不会挡住新会话。
                 application.state.ipcam_sequence += 1
@@ -445,6 +445,22 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         content = await application.state.pipeline.session_action(session_id, "thumbnail", identity_id)
         return Response(content, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
+    @application.post("/api/record/start")
+    async def start_record(action: RecordRequest):
+        """显式确认录制，仍受服务的禁止保存配置限制，默认拒绝。"""
+        return await application.state.pipeline.session_action(action.session_id, "start_record", action.confirm)
+
+    @application.post("/api/record/stop")
+    async def stop_record(action: RecordRequest):
+        """停止当前会话录制，不影响检测；停止视频同样会关闭写入器。"""
+        return await application.state.pipeline.session_action(action.session_id, "stop_record")
+
+    @application.get("/api/record/file/{filename}")
+    async def record_file(filename: str, session_id: str):
+        """只返回本会话明确录制过的文件，禁止遍历或下载任意本机文件。"""
+        path = await application.state.pipeline.session_action(session_id, "record_file", filename)
+        return FileResponse(path, media_type="video/mp4", filename=path.name, headers={"Cache-Control": "no-store"})
+
     @application.get("/api/health")
     async def health(request: Request) -> JSONResponse:
         """框架在 GET /api/health 时传入请求，输出设备、模型和统计 JSON。
@@ -466,11 +482,20 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             "https": {"cert_file_present": settings.https_cert.is_file(),
                       "key_file_present": settings.https_key.is_file()},
             "mirror_config_present": (PROJECT_ROOT / "scripts/check_mirrors.ps1").is_file(),
-            "logs_url": "/api/logs", "stage": "P5",
+            "logs_url": "/api/logs", "stage": "P7",
             "tracking": {"method": "ByteTrack", "scope": "per_video_session"},
             "reid": {"model": settings.reid_model, "high_threshold": settings.reid_tau_high,
-                     "local_weights_present": settings.reid_weights.is_file(), "calibrated": False},
+                     "local_weights_present": settings.reid_weights.is_file(), "calibrated": settings.reid_calibrated},
+            "field_acceptance": {"live_reid": "pending", "android_install": "pending"},
+            "recording": {"allowed": settings.allow_media_save},
+            "capture": {"max_side": settings.max_side, "jpeg_quality": settings.jpeg_quality},
         })
+
+    @application.get("/sw.js")
+    async def service_worker():
+        """根路径提供Worker，作用域覆盖主页面；不缓存检测API或用户媒体。"""
+        return FileResponse(PROJECT_ROOT / "web/sw.js", media_type="application/javascript",
+                            headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
 
     @application.get("/api/ipcam/status")
     async def camera_status() -> JSONResponse:

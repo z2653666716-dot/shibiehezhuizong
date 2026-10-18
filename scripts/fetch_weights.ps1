@@ -2,12 +2,13 @@
 # 输入：check_mirrors.ps1 中的地址；输出：weights\yolo11n.pt。
 # 下载中间文件放 work\downloads，完成后才移入 weights；实际推理由 P0 验收执行。
 [CmdletBinding()]
-param()
+param([ValidateSet('n', 's')][string]$Model = 'n')
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$modelPath = Join-Path $projectRoot 'weights\yolo11n.pt'
-$downloadPath = Join-Path $projectRoot 'work\downloads\yolo11n.pt.download'
+$modelName = "yolo11$Model.pt"
+$modelPath = Join-Path $projectRoot ("weights\" + $modelName)
+$downloadPath = Join-Path $projectRoot ("work\downloads\" + $modelName + '.download')
 $sources = & (Join-Path $PSScriptRoot 'check_mirrors.ps1') -GetSources
 
 function Test-ModelFile {
@@ -19,7 +20,7 @@ function Test-ModelFile {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
     $file = Get-Item -LiteralPath $Path
-    if ($file.Length -lt 1MB -or $file.Length -gt 20MB) { return $false }
+    if ($file.Length -lt 1MB -or $file.Length -gt 50MB) { return $false }
     $stream = [IO.File]::OpenRead($Path)
     try {
         return ($stream.ReadByte() -eq 80 -and $stream.ReadByte() -eq 75)
@@ -49,6 +50,7 @@ if (Test-ModelFile -Path $downloadPath) {
 
 # 按固定优先级逐个尝试，避免反复请求同一个失败的镜像。
 foreach ($source in $sources.Yolo) {
+    $source = $source.Replace('yolo11n.pt', $modelName)
     Write-Host "下载来源：$source"
     & curl.exe --fail --location --connect-timeout 10 --max-time 90 --retry 0 --silent --show-error --output $downloadPath $source
     if ($LASTEXITCODE -eq 0 -and (Test-ModelFile -Path $downloadPath)) {

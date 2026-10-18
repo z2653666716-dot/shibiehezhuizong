@@ -57,6 +57,7 @@ class AppConfig(BaseModel):
     reid_w_appear: float = Field(default=0.85, ge=0, le=1)
     reid_w_color: float = Field(default=0.15, ge=0, le=1)
     reid_weights: Path = Path("weights/mobilenet_v3_small-047dcff4.pth")
+    reid_calibrated: bool = False
     identity_limit: int = Field(default=20, ge=1, le=100)
     allow_media_save: bool = False
     jpeg_quality: float = Field(default=0.65, ge=0, le=1)

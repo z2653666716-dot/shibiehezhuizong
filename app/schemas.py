@@ -155,6 +155,7 @@ class FrameResult(DataModel):
     identities: list[IdentitySummary] = Field(default_factory=list)
     session_id: str | None = None
     events: list[dict] = Field(default_factory=list)
+    capture_max_side: int | None = Field(default=None, ge=32, le=2048)
 
 
 class LockRequest(DataModel):
@@ -172,6 +173,12 @@ class SelectRequest(DataModel):
     x: UnitValue
     y: UnitValue
     seq: int = Field(ge=0, strict=True)
+
+
+class RecordRequest(DataModel):
+    """录制操作始终指定视频会话；开始另需confirm=true且服务允许保存。"""
+    session_id: str = Field(min_length=20, max_length=100)
+    confirm: bool = Field(default=False, strict=True)
 
 
 class IpCameraStart(DataModel):

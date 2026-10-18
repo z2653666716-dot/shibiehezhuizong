@@ -18,6 +18,7 @@ import tempfile
 import time
 
 import httpx
+import psutil
 from websockets.sync.client import connect
 
 
@@ -251,7 +252,16 @@ def run_check(args: argparse.Namespace, report: dict) -> None:
                 session.evaluate('document.getElementById("start-detection").click()')
                 session.wait("testClient.received >= " + str(args.warmup_frames), timeout=40)
                 first = session.evaluate("({count:testClient.received,time:performance.now(),track_ids:testClient.boxes.map(box=>box.track_id)})")
-                time.sleep(args.duration)
+                # 只采集本次公开样例服务的内存数值，不读取或保存设备画面。
+                process = psutil.Process(server.pid)
+                memory_samples = [{"elapsed_s": 0.0, "rss_mib": round(process.memory_info().rss / 1024**2, 2)}]
+                memory_started = time.monotonic()
+                while time.monotonic() - memory_started < args.duration:
+                    time.sleep(min(5, max(0, args.duration - (time.monotonic() - memory_started))))
+                    memory_samples.append({"elapsed_s": round(time.monotonic() - memory_started, 2),
+                                           "rss_mib": round(process.memory_info().rss / 1024**2, 2)})
+                report["memory_samples"] = memory_samples
+                report["rss_growth_mib"] = round(memory_samples[-1]["rss_mib"] - memory_samples[0]["rss_mib"], 2)
                 result = session.evaluate("""({
                   count:testClient.received,time:performance.now(),state:testClient.state,
                   boxes:testClient.boxes.length,server_fps:Number(document.getElementById("fps-value").textContent),

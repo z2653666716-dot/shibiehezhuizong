@@ -17,7 +17,7 @@ const ENCODE_TIMEOUT_MS = 10000;
 const MAX_RETRIES = 3;
 
 /** 输入画布，异步输出纯 JPEG Base64；超时/失败时拒绝，不留下无限等待。 */
-function encodeFrame(canvas) {
+function encodeFrame(canvas, quality = JPEG_QUALITY) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let reader = null;
@@ -46,7 +46,7 @@ function encodeFrame(canvas) {
         reader.onerror = () => finish(new Error("读取摄像头图片失败"));
         reader.onabort = () => finish(new Error("读取摄像头图片已取消"));
         reader.readAsDataURL(blob);
-      }, "image/jpeg", JPEG_QUALITY);
+      }, "image/jpeg", quality);
     } catch (error) {
       finish(error);
     }
@@ -86,6 +86,8 @@ export class DetectionClient {
     this.generation = 0;
     this.sequence = 0;
     this.received = 0;
+    this.maxSide = MAX_SIDE;
+    this.jpegQuality = JPEG_QUALITY;
     this.pending = null;
     this.encoding = false;
     this.state = "idle";
@@ -132,10 +134,12 @@ export class DetectionClient {
     });
     this.camera.addEventListener("resize", () => {
       this.boxes = [];
+      this.interaction.cancel(false);
+      this.interaction.selected = null;
       this.smoother.reset();
       this.drawBoxes();
     });
-    this.camera.addEventListener("mirrorchange", () => this.drawBoxes());
+    this.camera.addEventListener("mirrorchange", () => { this.interaction.cancel(false); this.drawBoxes(); });
     window.addEventListener("resize", () => this.drawBoxes());
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) {
@@ -261,13 +265,13 @@ export class DetectionClient {
       const sourceWidth = this.camera.video.videoWidth;
       const sourceHeight = this.camera.video.videoHeight;
       if (!sourceWidth || !sourceHeight) throw new Error("摄像头尺寸尚未就绪");
-      const scale = Math.min(1, MAX_SIDE / Math.max(sourceWidth, sourceHeight));
+      const scale = Math.min(1, this.maxSide / Math.max(sourceWidth, sourceHeight));
       const width = Math.max(1, Math.round(sourceWidth * scale));
       const height = Math.max(1, Math.round(sourceHeight * scale));
       this.captureCanvas.width = width;
       this.captureCanvas.height = height;
       this.captureContext.drawImage(this.camera.video, 0, 0, width, height);
-      const image = await encodeFrame(this.captureCanvas);
+      const image = await encodeFrame(this.captureCanvas, this.jpegQuality);
       if (generation !== this.generation || this.state !== "connected" ||
           this.camera.state !== "running" || document.hidden) return;
       const seq = ++this.sequence;
@@ -306,6 +310,10 @@ export class DetectionClient {
       this.retryCount = 0;
       this.received += 1;
       this.interaction.accept(result);
+      if (result.capture_max_side && result.capture_max_side < this.maxSide) {
+        this.maxSide = result.capture_max_side;
+        this.interaction.toast("处理较慢，已降低传输尺寸以保持流畅");
+      }
       this.nodes.fps.textContent = result.fps.toFixed(1);
       this.nodes.latency.textContent = result.latency_ms.toFixed(1);
       this.nodes.count.textContent = String(this.received);
@@ -360,10 +368,11 @@ export class DetectionClient {
       const labelWidth = Math.min(canvas.width, context.measureText(text).width + 2 * padding);
       const labelX = Math.max(0, Math.min(x, canvas.width - labelWidth));
       const labelY = Math.max(0, Math.min(y >= labelHeight ? y - labelHeight : y, canvas.height - labelHeight));
-      context.fillStyle = "rgba(24, 28, 32, 0.88)";
+      context.fillStyle = box.state === "locked" ? "rgba(18, 77, 45, 0.94)" : "rgba(24, 28, 32, 0.88)";
       context.fillRect(labelX, labelY, labelWidth, labelHeight);
       context.fillStyle = style.color;
       context.fillText(text, labelX + padding, labelY + labelHeight / 2, Math.max(1, labelWidth - 2 * padding));
+      this.interaction.drawMarker(context, box, x, y, scale);
     }
     context.globalAlpha = 1;
     this.interaction.drawProgress(context);

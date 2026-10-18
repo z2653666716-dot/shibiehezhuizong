@@ -13,12 +13,15 @@ export class TargetInteraction {
     this.press = null;
     this.busy = false;
     this.identitiesKey = "";
+    this.recordAllowed = false;
+    this.recording = false;
     this.photoInput = document.getElementById("photo-file");
     document.getElementById("upload-photo").onclick = () => {
       if (this.session) this.photoInput.click();
       else this.toast("请先开始检测，再选择照片");
     };
     this.photoInput.onchange = () => void this.uploadPhoto();
+    document.getElementById("record-video").onclick = () => void this.toggleRecord();
     canvas.tabIndex = 0;
     canvas.setAttribute("aria-label", "目标操作：短按选中，长按或按 L 锁定");
     canvas.addEventListener("pointerdown", event => this.down(event));
@@ -60,7 +63,7 @@ export class TargetInteraction {
   down(event) {
     if (event.button !== 0 || this.press) return;
     const box = this.hit(event);
-    if (!box) { this.toast("请按住目标框内"); return; }
+    if (!box) { this.selected = null; this.redraw(); this.toast("请按住目标框内"); return; }
     this.selected = box.track_id;
     this.canvas.focus({ preventScroll: true });
     this.canvas.setPointerCapture(event.pointerId);
@@ -75,11 +78,11 @@ export class TargetInteraction {
   }
 
   /** 终止手势和动画；停止视频时同样调用，禁止迟到的长按锁定。 */
-  cancel() {
+  cancel(redraw = true) {
     clearTimeout(this.timer);
     cancelAnimationFrame(this.animation);
     this.press = null;
-    this.redraw();
+    if (redraw) this.redraw();
   }
 
   /** 输入同源接口与请求选项，输出 JSON；失败抛出服务端中文提示。 */
@@ -88,6 +91,34 @@ export class TargetInteraction {
     const body = await response.json();
     if (!response.ok || body.ok === false) throw new Error(body.message || "操作失败，请重试");
     return body;
+  }
+
+  /** 从健康接口读取保存策略，默认禁用；页面操作不能绕过服务端禁止保存设置。 */
+  configure(health) {
+    this.recordAllowed = health.recording?.allowed === true;
+    document.getElementById("record-hint").textContent = this.recordAllowed
+      ? "录制会在电脑保存带框视频。只有同意保存时才使用；停止检测会同时结束录制。"
+      : "当前禁止保存画面，录制不可用。";
+  }
+
+  /** 用户点击且再次确认后才请求保存；默认策略下按钮和接口均拒绝录制。 */
+  async toggleRecord() {
+    if (!this.recordAllowed || !this.session) return;
+    if (!this.recording && !window.confirm("录制将在这台电脑保存带标注的视频，不上传到互联网。是否同意本次保存？")) return;
+    const session = this.session;
+    try {
+      const body = await this.request("/api/record/" + (this.recording ? "stop" : "start"),
+        { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: session, confirm: true }) });
+      if (session !== this.session) return;
+      this.recording = body.active;
+      document.getElementById("record-video").textContent = this.recording ? "停止录制" : "开始录制";
+      const link = document.getElementById("download-record");
+      link.hidden = this.recording || !body.filename;
+      if (body.filename) link.href = "/api/record/file/" + encodeURIComponent(body.filename) +
+        "?session_id=" + encodeURIComponent(session);
+      this.toast(this.recording ? "正在录制" : "录制已停止：" + (body.filename || "暂无文件"));
+    } catch (error) { if (session === this.session) this.toast(error.message); }
   }
 
   /** 输入轨迹号，携带会话和已显示帧号锁定；异步结果不得改变新会话。 */
@@ -111,6 +142,7 @@ export class TargetInteraction {
     if (this.session !== result.session_id) { this.reset(); this.session = result.session_id || null; }
     this.seq = result.seq;
     document.getElementById("upload-photo").disabled = !this.session;
+    document.getElementById("record-video").disabled = !this.recordAllowed || !this.session;
     const identities = result.identities || [];
     const key = JSON.stringify(identities);
     if (key !== this.identitiesKey) {
@@ -188,6 +220,16 @@ export class TargetInteraction {
     context.stroke(); context.restore();
   }
 
+  /** 绿框角上的脉冲点表示正在跟踪，输入画布坐标与缩放；不改变检测分数。 */
+  drawMarker(context, box, x, y, scale) {
+    if (box.state !== "locked") return;
+    context.save(); context.setLineDash([]);
+    context.globalAlpha = .55 + .45 * Math.sin(performance.now() / 250) ** 2;
+    context.fillStyle = "#41e18b";
+    context.beginPath(); context.arc(x + 6 * scale, y + 6 * scale, 3 * scale, 0, 2 * Math.PI);
+    context.fill(); context.restore();
+  }
+
   /** 短文字提示，不保存任何用户画面。 */
   toast(message) {
     const node = document.getElementById("toast");
@@ -199,10 +241,15 @@ export class TargetInteraction {
   /** 停止/切换视频清理会话、选择和身份卡片，禁止旧操作落到新视频。 */
   reset() {
     this.session = null; this.selected = null; this.identitiesKey = "";
+    this.recording = false;
     this.cancel();
     document.getElementById("identity-list").replaceChildren();
     document.getElementById("identity-empty").hidden = false;
     document.getElementById("upload-photo").disabled = true;
+    document.getElementById("record-video").disabled = true;
+    document.getElementById("record-video").textContent = "开始录制";
+    document.getElementById("download-record").hidden = true;
+    document.getElementById("download-record").removeAttribute("href");
     this.photoInput.value = "";
   }
 }

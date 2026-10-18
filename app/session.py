@@ -6,6 +6,7 @@ from secrets import token_urlsafe
 from time import monotonic
 from datetime import datetime, timezone
 import json
+import logging
 from uuid import uuid4
 
 from .config import PROJECT_ROOT
@@ -13,6 +14,7 @@ from .config import PROJECT_ROOT
 from .gallery import Gallery
 from .reid import crop_target
 from .tracker import Tracker
+from .recorder import Recorder
 
 
 class SessionError(ValueError):
@@ -52,6 +54,7 @@ class VideoSession:
         self.events = []
         self.pending_events = []
         self.was_online = set()
+        self.recorder = Recorder(config)
         self.event_path = PROJECT_ROOT / "outputs/events" / ("tracking_" + uuid4().hex + ".jsonl")
 
     def update(self, detections, width, height):
@@ -106,10 +109,28 @@ class VideoSession:
                 track.identity_id = None
             if track.identity_id:
                 claimed.add(track.identity_id)
+        # 多个人都与同一身份相似时，先全局比较再分配，不能让检测数组中排在前面的人抢先变绿。
+        contenders = {}
+        for box in self.boxes:
+            track = self.observations.get(box.track_id)
+            if box.cls != 0 or track is None or track.identity_id or track.hits < 3 or box.track_id not in fresh:
+                continue
+            identity_id, best, second = self.gallery.rank(track.feature, claimed)
+            if identity_id and best >= self.config.reid_tau_high and best - second >= self.config.reid_margin:
+                contenders.setdefault(identity_id, []).append((best, box.track_id))
+        winners = {}
+        for identity_id, candidates in contenders.items():
+            candidates.sort(reverse=True)
+            # 身份之间要有差距，竞争同一身份的两个可见人物之间同样要有差距。
+            if len(candidates) == 1 or candidates[0][0] - candidates[1][0] >= self.config.reid_margin:
+                winners[candidates[0][1]] = identity_id
         output = []
         for box in self.boxes:
             track = self.observations.get(box.track_id)
             state, similarity = 'none', None
+            if track is not None and track.identity_id is None and box.track_id not in fresh:
+                # 裁剪太小等导致缺少本帧观测，也会中断连续确认，不能把不连续帧累计起来。
+                track.candidate, track.candidate_hits = None, 0
             if box.cls == 0 and track is not None and track.feature is not None:
                 if track.identity_id:
                     similarity = self.gallery.score(track.feature, track.identity_id)
@@ -128,7 +149,7 @@ class VideoSession:
                 if track.identity_id is None and track.hits >= 3 and box.track_id in fresh:
                     identity_id, best, second = self.gallery.rank(track.feature, claimed)
                     similarity = best if identity_id else None
-                    if identity_id and best >= self.config.reid_tau_high and best - second >= self.config.reid_margin:
+                    if identity_id and winners.get(box.track_id) == identity_id:
                         track.candidate_hits = track.candidate_hits + 1 if track.candidate == identity_id else 1
                         track.candidate = identity_id
                         state = 'candidate'
@@ -155,19 +176,47 @@ class VideoSession:
         # 冷启动特征提取可能耗时，过期判断以结果完成时间为准，不从推理开始计时。
         self.updated_at = monotonic()
         self.write_events()
+        self.recorder.write(frame, output, seq, self.events)
         return output
+
+    def start_record(self, confirm):
+        """只有允许保存且请求确认时才启动；默认返回明确拒绝，不会创建文件。"""
+        if self.frame is None:
+            raise SessionError("TRACK_GONE", "请先开始检测，收到画面后再录制")
+        height, width = self.frame.shape[:2]
+        try:
+            return {"ok": True, **self.recorder.start(width, height, confirm)}
+        except PermissionError as error:
+            raise SessionError("MEDIA_SAVE_FORBIDDEN", str(error)) from error
+
+    def stop_record(self):
+        """停止本会话录制并返回文件名，供页面显示。"""
+        return {"ok": True, **self.recorder.stop()}
+
+    def record_file(self, filename):
+        """仅允许下载本会话已结束的录制文件；文件名必须精确匹配，不拼接输入路径。"""
+        path = self.recorder.path
+        if path is None or filename != path.name or not path.is_file():
+            raise SessionError("RECORD_NOT_FOUND", "录制文件不存在")
+        if self.recorder.writer is not None:
+            raise SessionError("RECORD_ACTIVE", "请先停止录制再下载")
+        return path
 
     def write_events(self):
         """只记录事件名、匿名编号、时间和帧号；无图片、向量或控制会话凭据。"""
         if not self.events:
             return
-        self.event_path.parent.mkdir(parents=True, exist_ok=True)
-        if self.event_path.exists() and self.event_path.stat().st_size > 2 * 1024 * 1024:
-            return  # 限制单会话事件文件大小，不让长时间反复进出无限占用磁盘。
-        with self.event_path.open("a", encoding="utf-8") as stream:
-            for event in self.events:
-                stream.write(json.dumps({**event, "seq": self.seq,
-                    "at": datetime.now(timezone.utc).isoformat()}, ensure_ascii=False) + "\n")
+        try:
+            self.event_path.parent.mkdir(parents=True, exist_ok=True)
+            if self.event_path.exists() and self.event_path.stat().st_size > 2 * 1024 * 1024:
+                return  # 单会话事件上限，防止反复进出无限占用磁盘。
+            with self.event_path.open("a", encoding="utf-8") as stream:
+                for event in self.events:
+                    stream.write(json.dumps({**event, "seq": self.seq,
+                        "at": datetime.now(timezone.utc).isoformat()}, ensure_ascii=False) + "\n")
+        except OSError:
+            # 磁盘满等问题不应让内存中的检测和匹配一起停掉。
+            logging.getLogger(__name__).exception("事件记录失败")
 
     def lock(self, track_id, seq):
         """?????/?????????????????????????"""
@@ -232,6 +281,7 @@ class VideoSession:
 
     def reset(self):
         """???????????????????? Tracker ??????"""
+        self.recorder.stop()
         self.tracker.reset()
         self.observations.clear()
         self.gallery.items.clear()

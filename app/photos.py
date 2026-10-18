@@ -25,8 +25,11 @@ def decode_photo(content, content_type):
     if content_type.lower().startswith("multipart/form-data"):
         if len(content_type) > 512:
             raise SessionError("BAD_PHOTO", "照片上传格式不正确")
-        message = BytesParser(policy=default).parsebytes(
-            ("Content-Type: " + content_type + "\r\nMIME-Version: 1.0\r\n\r\n").encode("ascii") + content)
+        try:
+            message = BytesParser(policy=default).parsebytes(
+                ("Content-Type: " + content_type + "\r\nMIME-Version: 1.0\r\n\r\n").encode("ascii") + content)
+        except (ValueError, TypeError) as error:
+            raise SessionError("BAD_PHOTO", "照片上传格式不正确") from error
         parts = [part for part in message.iter_parts()
                  if part.get_param("name", header="content-disposition") in {"photo", "file"}]
         if len(parts) != 1:

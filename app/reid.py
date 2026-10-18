@@ -86,6 +86,8 @@ class FeatureExtractor:
             return new.copy()
         mixed = self.config.reid_ema * old + (1 - self.config.reid_ema) * new
         if len(mixed) == 704:
-            return np.concatenate([normalize(mixed[:576]) * np.sqrt(self.config.reid_w_appear),
-                                   normalize(mixed[576:]) * np.sqrt(self.config.reid_w_color)]).astype(np.float32)
+            # 配置允许某一权重为0；零向量不能再归一化，直接保留零分量。
+            appear = normalize(mixed[:576]) * np.sqrt(self.config.reid_w_appear) if self.config.reid_w_appear else np.zeros(576)
+            color = normalize(mixed[576:]) * np.sqrt(self.config.reid_w_color) if self.config.reid_w_color else np.zeros(128)
+            return np.concatenate([appear, color]).astype(np.float32)
         return normalize(mixed)

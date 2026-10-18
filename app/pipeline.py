@@ -69,6 +69,8 @@ class Pipeline:
         self.processed_frames = 0
         self.sessions = {}
         self.extractor = None
+        self.recommended_max_side = self.config.max_side
+        self.slow_frames = 0
 
     def create_tracker(self) -> Tracker:
         """无输入，输出新的会话跟踪器；路由为每条浏览器连接或一次 IP 采集创建一个。"""
@@ -203,6 +205,11 @@ class Pipeline:
                     result.fps = round((len(self._completion_times) - 1) / elapsed, 2)
             # FPS 来自实际处理完成的时间间隔，第一帧没有间隔，保持默认 0。
             self.processed_frames += 1
+            # 等冷启动窗口过去，持续30帧低于12FPS才降低传输尺寸；不反复升降造成抖动。
+            self.slow_frames = self.slow_frames + 1 if self.processed_frames > 30 and 0 < result.fps < 12 else 0
+            if self.slow_frames >= 30:
+                self.recommended_max_side = min(self.recommended_max_side, 480)
+            result.capture_max_side = self.recommended_max_side
             self.latest_result = result
             return result
 

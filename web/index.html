@@ -13,6 +13,8 @@
   <meta name="description" content="ViTrack：由电脑处理摄像头画面，检测目标并显示结果，提供日志诊断入口。">
   <title>ViTrack · 视觉目标检测与跟踪</title>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="icon" type="image/png" href="/static/icons/icon-192.png">
   <script type="module" src="/static/logger.js"></script>
   <script type="module" src="/static/start.js"></script>
 </head>
@@ -40,6 +42,7 @@
     <p id="page-status" role="status">
       检测界面正在初始化，请稍候。
     </p>
+    <button id="install-app" type="button" hidden>安装到主屏幕</button>
     <noscript>
       <p>浏览器未启用 JavaScript，摄像头检测和前端日志交互无法运行；服务端日志链接仍可使用。</p>
     </noscript>
@@ -94,7 +97,7 @@
           <input id="ipcam-consent" type="checkbox">
           我同意电脑读取已配置的手机 IP 视频流。
         </label>
-        <p>画面仅供本机处理和显示，不保存照片或视频。停止电脑读取后，手机摄像头 App 需自行结束。</p>
+        <p>画面仅供本机处理和显示，默认不保存照片或视频。停止电脑读取后，手机摄像头 App 需自行结束。</p>
       </div>
       <div class="primary-actions">
         <button id="start-detection" type="button" disabled aria-describedby="controls-hint">开始检测</button>
@@ -116,7 +119,8 @@
         </label>
       </fieldset>
       <button id="record-video" type="button" disabled aria-describedby="record-hint">开始录制</button>
-      <p id="record-hint">视频录制将在后续开放。</p>
+      <p id="record-hint">当前禁止保存画面，录制不可用。</p>
+      <a id="download-record" hidden download>下载本次标注视频</a>
     </section>
 
     <section id="identity-section" aria-labelledby="identity-heading">

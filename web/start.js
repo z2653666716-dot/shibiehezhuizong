@@ -7,6 +7,22 @@ import { logger } from "./logger.js";
 
 export let client = null;
 
+// Worker只缓存界面文件，不会开启设备。离线可打开界面，模型仍需连接电脑。
+if ("serviceWorker" in navigator && window.isSecureContext) {
+  navigator.serviceWorker.register("/sw.js").catch(error =>
+    logger.captureError("离线界面准备失败", error, { source: "pwa", code: "SW_FAILED" }));
+}
+let installPrompt = null;
+window.addEventListener("beforeinstallprompt", event => {
+  event.preventDefault(); installPrompt = event;
+  document.getElementById("install-app").hidden = false;
+});
+document.getElementById("install-app").onclick = async () => {
+  if (!installPrompt) return;
+  await installPrompt.prompt(); installPrompt = null;
+  document.getElementById("install-app").hidden = true;
+};
+
 /** 无输入，读取健康接口并初始化唯一客户端；输出真实模式/设备信息，不自动开启视频源。 */
 export async function initializePage() {
   if (client) return client;
@@ -40,10 +56,13 @@ export async function initializePage() {
       const module = await import("./app.js");
       client = module.client;
     }
+    client.interaction.configure(health);
+    client.maxSide = health.capture?.max_side || 640;
+    client.jpegQuality = health.capture?.jpeg_quality ?? 0.65;
     return client;
   } catch (error) {
     document.getElementById("health-status").textContent = "初始化失败";
-    document.getElementById("page-status").textContent = "页面初始化失败，请确认检测服务正常后刷新。";
+    document.getElementById("page-status").textContent = "无法连接电脑。界面可离线打开，检测需要连接电脑服务后刷新。";
     document.getElementById("start-detection").disabled = true;
     document.getElementById("stop-detection").disabled = true;
     logger.captureError("页面初始化失败", error, { source: "startup", code: "PAGE_INIT_FAILED" });

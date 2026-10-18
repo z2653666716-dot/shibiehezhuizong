@@ -30,6 +30,8 @@ def test_lock_lifecycle(service, monkeypatch, sample_stream):
             result = ws.receive_json()
             assert result["boxes"][0]["state"] == "locked"
             assert result["identities"][0]["online"]
+            denied = client.post("/api/record/start", json={"session_id": action["session_id"], "confirm": True})
+            assert denied.json()["code"] == "MEDIA_SAVE_FORBIDDEN"
             assert client.post("/api/select", json={"session_id": action["session_id"], "seq": 6,
                                                     "x": 0.99, "y": 0.99}).json()["code"] == "TRACK_GONE"
             with client.websocket_connect("/ws/stream") as other:

@@ -93,3 +93,34 @@ def test_real_pretrained_extractor():
     assert np.linalg.norm(vector) == pytest.approx(1, abs=1e-5)
     assert cosine(vector, vector) == pytest.approx(1, abs=1e-5)
     assert cosine(vector, flipped) > 0.8
+
+
+@pytest.mark.parametrize("appear,color", [(0., 1.), (1., 0.)])
+def test_zero_weight_can_be_smoothed(appear, color):
+    """用户将某个融合权重调到0时，EMA仍可工作，不能归一化全零分量。"""
+    extractor = FeatureExtractor.__new__(FeatureExtractor)
+    extractor.config = AppConfig(reid_w_appear=appear, reid_w_color=color)
+    vector = np.r_[np.ones(576) / np.sqrt(576) * np.sqrt(appear),
+                   np.ones(128) / np.sqrt(128) * np.sqrt(color)].astype(np.float32)
+    assert np.linalg.norm(extractor.smooth(vector, vector)) == pytest.approx(1)
+
+
+def test_best_visible_candidate_wins_independent_of_detection_order():
+    """低相似度候选排在检测数组前面时，仍应由更相似的人取得身份，不能先到先得。"""
+    class KnownExtractor:
+        def extract(self, crops, flip=False):
+            return [normalize([1, 0]) if crop[crop.shape[0] // 2, crop.shape[1] // 2, 0] > 100
+                    else normalize([.85, np.sqrt(1 - .85**2)]) for crop in crops]
+
+        def smooth(self, old, new):
+            return new
+
+    session = VideoSession(AppConfig(), KnownExtractor())
+    session.gallery.register([1, 0], source="photo")
+    frame = np.zeros((160, 320, 3), np.uint8)
+    frame[:, 160:] = 240
+    for seq in range(1, 8):
+        session.update([person(), person(200)], 320, 160)
+        boxes = session.process(frame, seq)
+    assert boxes[0].state == "none" and boxes[1].state == "locked"
+    assert boxes[1].identity_id == "ID-01"

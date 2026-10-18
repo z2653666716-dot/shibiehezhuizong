@@ -46,8 +46,13 @@ def main():
     group.add_argument("--diagnostic", action="store_true", help="只在公开 bus 图裁剪与增强上检查，不作为实拍标定")
     parser.add_argument("--output", type=Path, default=ROOT / "outputs/reid/calibration.json")
     parser.add_argument("--write-env", action="store_true", help="仅足量人工标注配对可更新 .env 高阈值")
+    parser.add_argument("--backend", choices=["mobilenet_v3_small", "color_histogram"], help="显式比较外观融合与纯颜色后端")
     args = parser.parse_args()
     config = load_config()
+    if args.backend:
+        if args.write_env and args.backend != config.reid_model:
+            parser.error("比较后端与生产REID_MODEL不一致，禁止将比较门槛写入生产配置")
+        config = type(config)(**{**config.model_dump(), "reid_model": args.backend})
     extractor = FeatureExtractor(config)
     same, different = [], []
     if args.diagnostic:
@@ -69,8 +74,13 @@ def main():
         different = [cosine(first, second) for index, first in enumerate(features) for second in features[index + 1:]]
     else:
         pairs = json.loads(args.pairs.read_text(encoding="utf-8-sig"))
+        seen_pairs = set()
         for key, output in (("same", same), ("diff", different)):
             for first_path, second_path in pairs[key]:
+                pair = tuple(sorted([str((args.pairs.parent / first_path).resolve()), str((args.pairs.parent / second_path).resolve())]))
+                if pair in seen_pairs or pair[0] == pair[1]:
+                    parser.error("配对重复、标签冲突或同一文件与自身配对，不能计入正式标定")
+                seen_pairs.add(pair)
                 images = [read_image(args.pairs.parent / name) for name in (first_path, second_path)]
                 first, second = extractor.extract(images)
                 output.append(cosine(first, second))
@@ -80,7 +90,9 @@ def main():
     recommendation = max(candidates, key=lambda row: (row["tar"], -row["far"], row["threshold"])) if candidates else None
     args.output.parent.mkdir(parents=True, exist_ok=True)
     report = {"mode": "public_augmented_diagnostic_only" if args.diagnostic else "labeled_pairs",
-              "production_calibrated": eligible and recommendation is not None,
+              "backend": config.reid_model,
+              "calibration_eligible": eligible,
+              "production_calibrated": eligible and recommendation is not None and args.write_env,
               "same_count": len(same), "diff_count": len(different), "rows": rows,
               "recommended_high": recommendation["threshold"] if recommendation and eligible else None,
               "same_scores": same, "different_scores": different,
@@ -103,8 +115,9 @@ def main():
             parser.error("不足每类15对或没有满足 FAR<=0.05 的门槛；已保存报告，未修改配置")
         env_path = ROOT / ".env"
         lines = env_path.read_text(encoding="utf-8-sig").splitlines() if env_path.exists() else []
-        lines = [line for line in lines if not line.startswith("REID_TAU_HIGH=")]
+        lines = [line for line in lines if not line.startswith(("REID_TAU_HIGH=", "REID_CALIBRATED="))]
         lines.append(f"REID_TAU_HIGH={recommendation['threshold']}")
+        lines.append("REID_CALIBRATED=true")
         env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(json.dumps({key: report[key] for key in ("mode", "same_count", "diff_count", "production_calibrated")}, ensure_ascii=False))
 

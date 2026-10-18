@@ -128,6 +128,7 @@ export class IpCameraClient {
       else this.updateControls();
     });
     this.nodes.mirror.addEventListener("change", () => {
+      this.interaction.cancel(false);
       this.mirrored = this.nodes.mirror.checked;
       this.render();
     });
@@ -359,10 +360,11 @@ export class IpCameraClient {
       const labelWidth = Math.min(width, context.measureText(text).width + 2 * padding);
       const labelX = Math.max(0, Math.min(x, width - labelWidth));
       const labelY = Math.max(0, Math.min(y >= labelHeight ? y - labelHeight : y, height - labelHeight));
-      context.fillStyle = "rgba(24, 28, 32, 0.88)";
+      context.fillStyle = box.state === "locked" ? "rgba(18, 77, 45, 0.94)" : "rgba(24, 28, 32, 0.88)";
       context.fillRect(labelX, labelY, labelWidth, labelHeight);
       context.fillStyle = style.color;
       context.fillText(text, labelX + padding, labelY + labelHeight / 2, Math.max(1, labelWidth - 2 * padding));
+      this.interaction.drawMarker(context, box, x, y, scale);
     }
     context.globalAlpha = 1;
     this.interaction.drawProgress(context);
