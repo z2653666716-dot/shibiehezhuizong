@@ -1,11 +1,14 @@
 """ViTrack 的 FastAPI 服务入口，接通帧流水线并保存可定位错误的日志。
 
 Uvicorn 通过 app.main:app 加载本模块；lifespan 初始化配置、模型和 Pipeline。
-HTTP 提供健康与日志接口，WebSocket 接收帧并返回结果；摄像头页面在后续里程碑接入。
+浏览器推帧与 IP 视频源共用 Pipeline；后者必须明确确认启动，不随服务启动自动读取。
 """
 
 import asyncio
-from contextlib import asynccontextmanager
+import base64
+
+import cv2
+from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 import json
@@ -25,8 +28,9 @@ from starlette.websockets import WebSocketState
 
 from .config import AppConfig, PROJECT_ROOT, load_config
 from .detector import Detector
+from .ipcamera import IpCamera
 from .pipeline import MAX_JPEG_BYTES, Pipeline, PipelineError
-from .schemas import ErrorResponse, FrameMessage
+from .schemas import ErrorResponse, FrameMessage, IpCameraPull, IpCameraStart
 
 
 LOG_DIR = PROJECT_ROOT / "outputs" / "logs"
@@ -183,8 +187,9 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         try:
             settings = config if config is not None else load_config()
             application.state.settings = settings
-            if settings.source != "ws":
-                raise RuntimeError("当前阶段请使用 SOURCE=ws，IP 摄像头读取将在 P2 接入")
+            application.state.ipcam_reader = (
+                IpCamera(settings.ipcam_url, max_side=settings.max_side) if settings.source == "ipcam" else None
+            )
             logger.info("服务启动 source=%s model=%s", settings.source, settings.det_model)
             # 权重加载也可能耗时，启动阶段交给后台线程执行。
             detector = await asyncio.to_thread(Detector, settings)
@@ -198,6 +203,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         try:
             yield
         finally:
+            async with application.state.ipcam_lock:
+                await stop_ipcam_task()
             application.state.ready = False
             application.state.pipeline = None
             logger.info("服务结束 processed_frames=%s", pipeline.processed_frames)
@@ -207,6 +214,138 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     application.state.ready = False
     application.state.pipeline = None
     application.state.settings = None
+    application.state.ipcam_reader = None
+    application.state.ipcam_task = None
+    application.state.ipcam_packet = None
+    application.state.ipcam_error = None
+    application.state.ipcam_sequence = 0
+    application.state.ipcam_lock = asyncio.Lock()
+    application.state.ipcam_condition = asyncio.Condition()
+
+    def require_ipcam() -> IpCamera:
+        """HTTP 入口共用检查：无输入，返回读取器；配置不符直接拒绝，不尝试连接。"""
+        if not application.state.ready:
+            raise HTTPException(503, "检测服务尚未就绪")
+        if application.state.ipcam_reader is None:
+            raise HTTPException(409, "当前为浏览器推帧模式，请先配置 SOURCE=ipcam 和 IPCAM_URL")
+        return application.state.ipcam_reader
+
+    def ipcam_status() -> dict:
+        """输出读取和处理状态；健康/控制接口共用，不包含地址密码或图像。"""
+        reader = application.state.ipcam_reader
+        status = reader.status() if reader is not None else {"state": "idle", "last_seq": 0, "error_code": None}
+        if application.state.ipcam_error:
+            status["state"] = "error"
+            status["error_code"] = application.state.ipcam_error["code"]
+        return {"configured": reader is not None, **status, "result_seq": application.state.ipcam_sequence,
+                "has_frame": application.state.ipcam_packet is not None}
+
+    def prepare_ipcam_frame(image, max_side: int, quality: float):
+        """接收 BGR 图像、最长边和质量，输出缩放图像及同一图像的 JPEG/Base64。
+
+        后台任务调用；按比例缩放，检测与预览使用同一张图，保证框的坐标对应正确。
+        全部转换在内存完成，不写照片或视频。
+        """
+        height, width = image.shape[:2]
+        scale = min(1.0, max_side / max(width, height))
+        if scale < 1:
+            image = cv2.resize(image, (max(1, round(width * scale)), max(1, round(height * scale))))
+        ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, round(quality * 100)])
+        if not ok:
+            raise PipelineError("IPCAM_ENCODE_FAILED", "IP 视频源预览编码失败")
+        return image, base64.b64encode(encoded).decode("ascii")
+
+    async def run_ipcam() -> None:
+        """确认启动后的唯一后台任务：循环取最新帧、共用 Pipeline 检测、发布一个结果包。
+
+        输出保存在应用内存并唤醒 WebSocket；读取和编码在线程内等待。
+        每张图只推理一次，所有观看者共用结果，不为慢观看者累积画面。
+        """
+        reader = application.state.ipcam_reader
+        token = log_context.set((uuid4().hex[:12], "-"))
+        messages = {
+            "IPCAM_OPEN_FAILED": "无法打开 IP 视频源，请检查手机 App、地址和网络",
+            "IPCAM_DISCONNECTED": "IP 视频源已断开，请检查网络后手动重新启动",
+            "IPCAM_BAD_FRAME": "IP 视频源返回的图像尺寸或格式不符合要求",
+            "IPCAM_READ_FAILED": "读取 IP 视频源失败，请检查连接后重试",
+        }
+        try:
+            while True:
+                captured = await asyncio.to_thread(reader.read)
+                if captured is None:
+                    status = reader.status()
+                    if status["state"] == "error":
+                        code = status["error_code"] or "IPCAM_READ_FAILED"
+                        raise PipelineError(code, messages.get(code, "IP 视频源读取失败"))
+                    continue
+                settings = application.state.settings
+                image, jpeg = await asyncio.to_thread(
+                    prepare_ipcam_frame, captured.image, settings.max_side, settings.jpeg_quality,
+                )
+                # 结果序号跨多次开始/停止递增，旧会话的 after 不会挡住新会话。
+                application.state.ipcam_sequence += 1
+                sequence = application.state.ipcam_sequence
+                log_context.set((log_context.get()[0], str(sequence)))
+                result = await application.state.pipeline.process_frame(image, sequence)
+                height, width = image.shape[:2]
+                async with application.state.ipcam_condition:
+                    application.state.ipcam_packet = {
+                        "type": "ipcam_frame", "seq": sequence, "w": width, "h": height,
+                        "img": jpeg, "result": result.model_dump(mode="json"),
+                    }
+                    application.state.ipcam_condition.notify_all()
+                # 主动让出事件循环，让停止请求也有机会及时执行。
+                await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            raise
+        except PipelineError as error:
+            application.state.ipcam_error = error_body(error.code, error.message)
+            logger.warning("IP 视频源停止 code=%s", error.code)
+        except Exception:
+            application.state.ipcam_error = error_body("IPCAM_FAILED", "IP 视频源处理失败，请检查服务状态")
+            logger.exception("IP 视频源处理失败")
+        finally:
+            try:
+                await asyncio.to_thread(reader.stop)
+            finally:
+                async with application.state.ipcam_condition:
+                    application.state.ipcam_packet = None
+                    application.state.ipcam_condition.notify_all()
+                log_context.reset(token)
+
+    async def stop_ipcam_task() -> None:
+        """取消处理任务、等待读取进程关闭并清除预览，由控制接口和服务退出调用。
+
+        调用方持有 ipcam_lock，使同时到来的开始/停止操作按顺序执行。
+        """
+        task = application.state.ipcam_task
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        reader = application.state.ipcam_reader
+        if reader is not None:
+            await asyncio.to_thread(reader.stop)
+        application.state.ipcam_task = None
+        application.state.ipcam_packet = None
+        application.state.ipcam_error = None
+        async with application.state.ipcam_condition:
+            application.state.ipcam_condition.notify_all()
+
+    async def next_ipcam_packet(after: int) -> dict:
+        """输入已显示序号，等待更新的结果包；停止或失败时退出，不返回过期画面。"""
+        async with application.state.ipcam_condition:
+            while True:
+                if application.state.ipcam_error:
+                    raise PipelineError("IPCAM_STOPPED", "IP 视频源已发生错误，请查看状态后重试")
+                packet = application.state.ipcam_packet
+                if packet is not None and packet["seq"] > after:
+                    return packet
+                reader = application.state.ipcam_reader
+                if reader is None or reader.status()["state"] == "idle":
+                    raise PipelineError("IPCAM_NOT_STARTED", "IP 视频源尚未启动，请先明确确认启动")
+                await application.state.ipcam_condition.wait()
+
 
     @application.middleware("http")
     async def request_log(request: Request, call_next):
@@ -266,7 +405,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         pipeline = application.state.pipeline
         latest = pipeline.latest_result
         return JSONResponse({
-            "ok": True, "source": settings.source,
+            "ok": True, "source": settings.source, "ipcam": ipcam_status(),
             "device": settings.det_device, "device_name": pipeline.detector.device_name,
             "cuda_available": pipeline.detector.cuda_available, "model": settings.det_model.name,
             "fps": latest.fps if latest else 0.0,
@@ -277,6 +416,76 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             "mirror_config_present": (PROJECT_ROOT / "scripts/check_mirrors.ps1").is_file(),
             "logs_url": "/api/logs", "stage": "P1",
         })
+
+    @application.get("/api/ipcam/status")
+    async def camera_status() -> JSONResponse:
+        """无输入，输出状态；查询不会启动设备或暴露配置地址。"""
+        require_ipcam()
+        return JSONResponse({"ok": True, **ipcam_status()})
+
+    @application.post("/api/ipcam/start")
+    async def start_ipcam(action: IpCameraStart) -> JSONResponse:
+        """接收 JSON confirm=true，启动配置的视频源；没有明确确认则拒绝。"""
+        reader = require_ipcam()
+        if not action.confirm:
+            raise HTTPException(400, "请明确确认后再启动 IP 视频源")
+        async with application.state.ipcam_lock:
+            task = application.state.ipcam_task
+            if task is not None and not task.done():
+                return JSONResponse({"ok": True, **ipcam_status()})
+            await stop_ipcam_task()
+            await asyncio.to_thread(reader.start)
+            application.state.ipcam_task = asyncio.create_task(run_ipcam())
+            return JSONResponse({"ok": True, **ipcam_status()})
+
+    @application.post("/api/ipcam/stop")
+    async def stop_ipcam() -> JSONResponse:
+        """无额外输入，停止网络读取并释放当前预览；重复操作安全。"""
+        require_ipcam()
+        async with application.state.ipcam_lock:
+            await stop_ipcam_task()
+            return JSONResponse({"ok": True, **ipcam_status()})
+
+    @application.websocket("/ws/ipcam")
+    async def ipcam_stream(websocket: WebSocket) -> None:
+        """接收 next/after，返回更新的图像和框；连接本身不会启动读取。
+
+        一问一答避免慢客户端积压，每个 img/result 来自同一帧；
+        后续 IP 视频源页面调用本接口，浏览器摄像头仍走 /ws/stream。
+        """
+        token = log_context.set((uuid4().hex[:12], "-"))
+        try:
+            await websocket.accept()
+            if application.state.ipcam_reader is None:
+                await websocket.send_json(error_body("SOURCE_MISMATCH", "当前不是 IP 视频源模式"))
+                await websocket.close(code=1008)
+                return
+            while True:
+                event = await websocket.receive()
+                if event["type"] == "websocket.disconnect":
+                    break
+                text = event.get("text")
+                if text is None or len(text.encode("utf-8")) > 1024:
+                    await websocket.send_json(error_body("BAD_REQUEST", "请发送小于 1024 字节的 next 请求"))
+                    continue
+                try:
+                    pull = IpCameraPull.model_validate(json.loads(text))
+                except (ValidationError, json.JSONDecodeError):
+                    await websocket.send_json(error_body("BAD_REQUEST", "next 请求格式不正确"))
+                    continue
+                try:
+                    packet = await asyncio.wait_for(next_ipcam_packet(pull.after), timeout=15)
+                    await websocket.send_json(packet)
+                except PipelineError as error:
+                    await websocket.send_json(error_body(error.code, error.message))
+                except asyncio.TimeoutError:
+                    await websocket.send_json(error_body("IPCAM_WAIT_TIMEOUT", "等待新画面超时，请检查视频源状态"))
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            logger.exception("IP 视频源观看连接异常")
+        finally:
+            log_context.reset(token)
 
     @application.get("/api/logs")
     async def logs() -> JSONResponse:
@@ -339,6 +548,10 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             if not application.state.ready:
                 await websocket.send_json(error_body("SERVICE_NOT_READY", "检测服务尚未就绪"))
                 await websocket.close(code=1013)
+                return
+            if application.state.settings.source != "ws":
+                await websocket.send_json(error_body("SOURCE_MISMATCH", "当前为 IP 视频源模式，请使用对应观看接口"))
+                await websocket.close(code=1008)
                 return
             while True:
                 log_context.set((connection_id, "-"))

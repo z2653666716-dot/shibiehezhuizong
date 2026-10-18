@@ -1,0 +1,58 @@
+{
+  "description": "公开图片的小规模诊断集：手工框标注真实人物，衣物区域用于检查误检；不包含用户实拍。",
+  "version": 1,
+  "annotation_note": "人物框由目视粗标，仅供问题诊断；墙上画像与无人穿的衣服不算真实人物。此集合不能代表通用准确率。",
+  "cases": [
+    {
+      "id": "bus_people",
+      "file": "data/samples/test.jpg",
+      "sha256": "c02019c4979c191eb739ddd944445ef408dad5679acab6fd520ef9d434bfbc63",
+      "source": "https://ultralytics.com/images/bus.jpg",
+      "persons": [[0.0, 0.504, 0.099, 0.815], [0.06, 0.367, 0.305, 0.84], [0.27, 0.375, 0.433, 0.805], [0.824, 0.363, 1.0, 0.823]],
+      "clothing_regions": [],
+      "note": "沿用项目已有官方样例；两名完整人物与左右边缘两名局部人物，共四名。"
+    },
+    {
+      "id": "closet_clothes",
+      "file": "data/samples/clothing/closet_clothes.jpg",
+      "sha256": "71e077ab678b3b692e579d8cd9423d03967816e5f62919f071c0554f8b0f05d0",
+      "source": "https://commons.wikimedia.org/wiki/File:Clothes_hanged_inside_a_closet.jpg",
+      "download_url": "https://upload.wikimedia.org/wikipedia/commons/9/9d/Clothes_hanged_inside_a_closet.jpg",
+      "author": "mycurrency.com (Mycaccount)",
+      "license": "CC BY-SA 4.0",
+      "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
+      "modifications": "none",
+      "persons": [],
+      "clothing_regions": [[0.0, 0.25, 1.0, 1.0]],
+      "note": "目视确认只有衣柜与悬挂衣物，没有真人。"
+    },
+    {
+      "id": "window_jacket",
+      "file": "data/samples/clothing/window_jacket.jpg",
+      "sha256": "559ed1b9dac642861a216f38838d652d245e496620e8fc8db43ce966c231c204",
+      "source": "https://commons.wikimedia.org/wiki/File:Jacket_hanging_from_window_latch.JPG",
+      "download_url": "https://thumb.wikimedia.org/wikipedia/commons/thumb/b/b8/Jacket_hanging_from_window_latch.JPG/1280px-Jacket_hanging_from_window_latch.JPG",
+      "author": "Demeester",
+      "license": "CC BY-SA 3.0",
+      "license_url": "https://creativecommons.org/licenses/by-sa/3.0/",
+      "modifications": "Wikimedia-provided 1280px thumbnail; no local edits",
+      "persons": [],
+      "clothing_regions": [[0.59, 0.0, 1.0, 1.0]],
+      "note": "目视确认窗边悬挂外套无人穿着。原图下载限流，使用官方缩略图来源。"
+    },
+    {
+      "id": "gallery_people_and_jacket",
+      "file": "data/samples/clothing/gallery_jacket.jpg",
+      "sha256": "b72b56bb1d7eb6df4c64a2731c0f92f157cdc935ebd2a180c4254d04f226858a",
+      "source": "https://commons.wikimedia.org/wiki/File:Jacket_hanging_in_art_gallery_(Unsplash).jpg",
+      "download_url": "https://upload.wikimedia.org/wikipedia/commons/3/39/Jacket_hanging_in_art_gallery_%28Unsplash%29.jpg",
+      "author": "Jocelyn Wu (jocelynwu)",
+      "license": "CC0 1.0, as recorded on Wikimedia Commons",
+      "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "modifications": "none",
+      "persons": [[0.0, 0.476, 0.061, 0.653], [0.647, 0.482, 0.748, 0.917]],
+      "clothing_regions": [[0.282, 0.216, 0.666, 0.802]],
+      "note": "两名真人：左侧边缘局部人物、右侧人物；中间悬挂外套和墙上画像不是真人。"
+    }
+  ]
+}

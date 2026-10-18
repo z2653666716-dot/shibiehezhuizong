@@ -247,7 +247,7 @@ main > section, #diagnostics {
   background: #080f14;
 }
 
-#camera-video {
+#camera-video, #ipcam-preview {
   display: block;
   width: 100%;
   height: auto;
@@ -326,6 +326,23 @@ dd {
 }
 
 /* 4. 操作控件与身份列表；预留按钮保持可辨认的禁用外观。 */
+#ipcam-consent-panel {
+  margin-block: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+#ipcam-consent-panel label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#ipcam-consent {
+  flex: 0 0 auto;
+}
+
 .primary-actions, .log-actions {
   display: flex;
   flex-wrap: wrap;

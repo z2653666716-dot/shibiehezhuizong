@@ -2,7 +2,7 @@
 <!--
   ViTrack 浏览器端的页面入口：定义画面、状态、操作与日志诊断区域。
   app/main.py 通过 / 和 /pc 返回本文件；本文件定义各个页面区域。
-  style.css 负责布局；app.js 接入摄像头、传帧和检测，camera.js 管理设备。
+  style.css 负责布局；start.js 按服务配置选择 app.js 或 ipcam.js，避免错误开启本机摄像头。
   控件先保持禁用，由相应模块初始化；logger.js 提供统一诊断入口。
 -->
 <html lang="zh-CN">
@@ -14,7 +14,7 @@
   <title>ViTrack · 视觉目标检测与跟踪</title>
   <link rel="stylesheet" href="/static/style.css">
   <script type="module" src="/static/logger.js"></script>
-  <script type="module" src="/static/app.js"></script>
+  <script type="module" src="/static/start.js"></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -57,6 +57,8 @@
       <div id="camera-stage" class="camera-stage" aria-describedby="camera-hint">
         <video id="camera-video" width="640" height="360" muted playsinline autoplay
                hidden aria-label="摄像头实时画面"></video>
+        <!-- IP 模式由普通画布承载远端图像，不调用本机摄像头。 -->
+        <canvas id="ipcam-preview" width="640" height="360" hidden aria-label="IP 视频源实时画面"></canvas>
         <canvas id="detection-overlay" width="640" height="360" hidden aria-hidden="true">
           当前浏览器不支持画布，无法显示检测框。
         </canvas>
@@ -85,6 +87,13 @@
     <section id="controls-section" aria-labelledby="controls-heading">
       <h2 id="controls-heading">检测操作</h2>
       <p id="controls-hint">摄像头操作尚未接入，下列控件暂不可用。</p>
+      <div id="ipcam-consent-panel" hidden>
+        <label for="ipcam-consent">
+          <input id="ipcam-consent" type="checkbox">
+          我同意电脑读取已配置的手机 IP 视频流。
+        </label>
+        <p>画面仅供本机处理和显示，不保存照片或视频。停止电脑读取后，手机摄像头 App 需自行结束。</p>
+      </div>
       <div class="primary-actions">
         <button id="start-detection" type="button" disabled aria-describedby="controls-hint">开始检测</button>
         <button id="stop-detection" type="button" disabled aria-describedby="controls-hint">停止检测</button>
@@ -99,8 +108,9 @@
           <option value="user">前置摄像头</option>
         </select>
         <label>
-          <input id="mirror-preview" type="checkbox">
-          镜像预览
+          <!-- 默认左右翻转，自拍时像照镜子；取消勾选即可恢复原方向。 -->
+          <input id="mirror-preview" type="checkbox" checked>
+          左右镜像（画面与检测框同步）
         </label>
       </fieldset>
       <button id="record-video" type="button" disabled aria-describedby="record-hint">开始录制</button>
@@ -161,6 +171,8 @@
             <div><dt>服务状态</dt><dd id="health-status">尚未读取</dd></div>
             <div><dt>计算设备</dt><dd id="device-name">尚未读取</dd></div>
             <div><dt>检测模型</dt><dd id="model-name">尚未读取</dd></div>
+            <div><dt>视频来源</dt><dd id="source-name">尚未读取</dd></div>
+            <div><dt>摄像头访问环境</dt><dd id="camera-support">尚未检查</dd></div>
           </dl>
           <p><a href="/api/health">查看服务健康信息</a></p>
         </section>

@@ -155,6 +155,19 @@ class FrameResult(DataModel):
     identities: list[IdentitySummary] = Field(default_factory=list)
 
 
+class IpCameraStart(DataModel):
+    """IP 视频源启动请求：只接受 JSON 布尔 confirm，由启动接口检查是否明确同意。"""
+
+    confirm: bool = Field(strict=True)
+
+
+class IpCameraPull(DataModel):
+    """观看请求：after 表示已显示序号；服务端只返回更新的一帧，避免慢客户端排队。"""
+
+    type: Literal["next"] = "next"
+    after: int = Field(default=0, ge=0, strict=True)
+
+
 class ErrorResponse(DataModel):
     """统一中文错误格式，由未来的 HTTP/WS 错误处理流程构造。
 

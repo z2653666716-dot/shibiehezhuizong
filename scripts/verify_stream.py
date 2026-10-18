@@ -200,6 +200,7 @@ def run_check(args: argparse.Namespace, report: dict) -> None:
                     for route, path in [
                         ("/pc", "web/index.html"), ("/static/app.js", "web/app.js"),
                         ("/static/camera.js", "web/camera.js"), ("/static/style.css", "web/style.css"),
+                        ("/static/start.js", "web/start.js"),
                     ]:
                         response = client.get(route)
                         if response.status_code != 200 or response.content != (PROJECT_ROOT / path).read_bytes():
@@ -232,7 +233,7 @@ def run_check(args: argparse.Namespace, report: dict) -> None:
                     })
                 session.call("Page.addScriptToEvaluateOnNewDocument", {"source": sample_source(sample)})
                 session.call("Page.navigate", {"url": base_url + "/pc"})
-                session.wait('document.getElementById("start-detection")?.textContent === "开始检测"')
+                session.wait('document.getElementById("source-name")?.textContent === "当前浏览器摄像头" && !document.getElementById("start-detection").disabled')
                 permissions = session.evaluate("""(async () => ({
                   camera:(await navigator.permissions.query({name:"camera"})).state,
                   microphone:(await navigator.permissions.query({name:"microphone"})).state
@@ -255,7 +256,8 @@ def run_check(args: argparse.Namespace, report: dict) -> None:
                   count:testClient.received,time:performance.now(),state:testClient.state,
                   boxes:testClient.boxes.length,server_fps:Number(document.getElementById("fps-value").textContent),
                   server_latency_ms:Number(document.getElementById("latency-value").textContent),
-                  max_pending:testMaxPending,frames:syntheticFrames
+                  max_pending:testMaxPending,frames:syntheticFrames,
+                  smoothing_history:testClient.smoother.previous.length
                 })""")
                 elapsed = (result["time"] - first["time"]) / 1000
                 fps = (result["count"] - first["count"]) / elapsed
@@ -269,17 +271,19 @@ def run_check(args: argparse.Namespace, report: dict) -> None:
                     raise RuntimeError("样例结果或叠框不符合预期")
                 if result["max_pending"] != 1:
                     raise RuntimeError("在途帧数超过 1")
+                if result["smoothing_history"] != result["boxes"]:
+                    raise RuntimeError("显示平滑未保存当前框，或混入已消失的目标")
                 if not all(frame["jpeg"] and max(frame["w"], frame["h"]) <= 640 for frame in result["frames"]):
                     raise RuntimeError("发送图像格式或尺寸不符合默认设置")
                 session.evaluate('document.getElementById("stop-detection").click();stopSyntheticSource()')
-                if not session.evaluate("syntheticTracks.every(track=>track.readyState==='ended') && testClient.socket===null"):
+                if not session.evaluate("syntheticTracks.every(track=>track.readyState==='ended') && testClient.socket===null && testClient.smoother.previous.length===0"):
                     raise RuntimeError("停止后没有释放合成视频源或检测连接")
                 report.update(
                     duration_s=round(elapsed, 3), completed_frames=result["count"] - first["count"],
                     completion_fps=round(fps, 3), server_fps=result["server_fps"],
                     server_latency_ms=result["server_latency_ms"], detected_persons=result["boxes"],
                     maximum_inflight=result["max_pending"], painted_pixels=painted,
-                    synthetic_tracks_released=True, physical_camera_access=False,
+                    synthetic_tracks_released=True, smoothing_history_reset=True, physical_camera_access=False,
                 )
                 if fps < args.min_fps:
                     raise RuntimeError("样例流吞吐低于 --min-fps 设置")

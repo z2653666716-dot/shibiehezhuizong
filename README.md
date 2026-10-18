@@ -4,8 +4,9 @@
 完整需求见 `docs/ViTrack-视觉目标检测与跟踪-实施方案.md`，实际实施状态见 `PROGRESS.md`。
 P0 已通过；P1 的 PC 人物检测闭环已通过本次授权实机验收，阶段源码保存在本地 Git。
 页面已接通摄像头取帧、WebSocket、GPU 检测、白框叠加和真实指标；可开始/停止检测、切换方向与镜像。
-本次约 36 秒内完成实机检查，30 秒计时窗口约 27.4 FPS；手机接入、跟踪、锁定、重识别和长时间稳定性仍待后续阶段。
+P1 的 PC 实机检查约 36 秒，30 秒计时窗口约 27.4 FPS；随后两种手机模式的 5 分钟人工连续运行检查也已完成，跟踪、锁定、重识别和更长期稳定性待后续阶段。
 本项目默认只检测人物；“person”类别结果不代表确认了具体身份。
+P2 手机接入已完成：两种手机模式均由用户确认连续 5 分钟运行正常且停止后释放，23 项测试通过。显示坐标平滑已通过样例检查，实拍改善程度未复测。提高实际输入像素后仍出现衣物误检，按用户要求保留默认参数并暂缓该问题，优先进入 P3 跟踪与锁定。
 本机 CUDA Toolkit 13.3 保持不变，项目环境使用 PyTorch 自带的 CUDA 12.8 运行库。
 
 本次验收：Python 3.11.17、torch 2.9.1+cu128，样例图中检测到 4 个人物。
@@ -62,13 +63,17 @@ homework3/
 │  ├─ config.py             # 配置读取与检查
 │  ├─ schemas.py            # 检测数据和通信格式
 │  ├─ detector.py           # 可复用的 YOLO 单帧检测器
-│  └─ pipeline.py           # 帧解码、检测、结果组装与统计
+│  ├─ ipcamera.py           # 确认启动后读取网络视频，单帧共享内存与限时停止
+│  └─ pipeline.py           # 浏览器和 IP 视频源共用的检测流水线
 ├─ web/
 │  ├─ index.html            # 浏览器入口，画面、状态、操作与日志诊断结构
+│  ├─ start.js              # 页面脚本入口：读取服务模式后选择唯一客户端
+│  ├─ ipcam.js              # IP 视频源确认、拉帧、绘制与停止
+│  ├─ box_smoother.js        # 两种页面共用的坐标平滑，不修改检测分数
 │  ├─ style.css             # 深色主题、宽窄屏布局、视频叠层和诊断区样式
 │  ├─ logger.js             # 浏览器错误记录、诊断区显示与日志导出
 │  ├─ camera.js             # 摄像头授权、预览、尺寸同步与设备释放
-│  └─ app.js                # 前端检测入口：取帧、WebSocket、指标与叠框
+│  └─ app.js                # 浏览器采集模式：取帧、WebSocket、指标与叠框
 ├─ AGENTS.md                 # 编程、注释和教学协作规则
 ├─ PROGRESS.md               # 实际完成情况、问题与下一步
 ├─ README.md                 # 环境准备、服务启动和模块阅读说明
@@ -78,24 +83,43 @@ homework3/
 ├─ .env.example              # 可复制为 .env 的参数示例
 ├─ scripts/
 │  ├─ setup_env.ps1          # 环境准备入口
+│  ├─ gen_cert.py            # 生成和检查局域网自签证书
+│  ├─ run.ps1                # PC HTTP / 手机 HTTPS 启动入口
 │  ├─ verify_env.py          # 环境检查入口
 │  ├─ verify_stream.py       # 仅用固定样例复核浏览器检测链路
+│  ├─ evaluate_detection.py  # 离线对照检测参数，同时检查误检与漏检
 │  ├─ check_mirrors.ps1      # 统一下载地址与镜像连通性检查
 │  └─ fetch_weights.ps1      # 最多三源下载 YOLO11n
+├─ tests/
+│  ├─ __init__.py           # 让测试文件可以作为包相互导入
+│  ├─ test_ipcamera.py       # 只用本机样例流验证读取器和接口
+│  ├─ test_ipcam_page.py     # 拒绝设备权限的 Edge 页面验证
+│  ├─ test_box_smoother.py   # 用合成坐标检查平滑与重置边界
+│  └─ test_detection_review.py # 验证离线评分、输入校验和报告保护
+├─ certs/                    # 本机生成的证书和私钥，不提交 Git
 ├─ weights/yolo11n.pt        # 检测模型
 ├─ data/samples/test.jpg     # 官方单图样例，用于基础检测验收
+├─ data/samples/detection_cases.json # 公开图片校验值、人工人物框与衣物区域
+├─ data/samples/clothing/    # 公开衣物参考图片与作者、许可说明
 ├─ envs/vitrack/             # 运行时生成：独立 Python 环境
 ├─ work/                     # 运行时生成：下载缓存、临时文件和第三方配置
 ├─ outputs/environment/      # 运行时生成：环境检查结果
 ├─ outputs/detection/        # 运行时生成：单图检测图片和数据
 ├─ outputs/pipeline/         # 运行时生成：帧处理集成验证报告
 ├─ outputs/validation/       # 运行时生成：不访问隐私设备的样例流报告
+├─ outputs/certificates/     # 证书生成与异常检查结果，不含私钥
+├─ outputs/startup/          # 启动入口与加密连接检查结果
+├─ outputs/ipcam/            # IP 视频源验证摘要，不包含画面
+├─ outputs/viewer/           # 观看页面与原推帧模式的样例验证摘要
+├─ outputs/detection_review/ # 离线诊断的输入校验与两种传输条件对照
+├─ outputs/phone/            # 手机服务地址和人工接入检查结果，不包含画面
 ├─ outputs/logs/             # 正式运行时生成：运行日志与错误堆栈
 ├─ outputs/server/           # 服务验证报告与隔离保存的模拟错误日志
 └─ docs/                     # 原实施方案和后续项目说明
 ```
 
-`envs`、`work` 和 `outputs` 不属于源码，不应放入最终课程源码压缩包。
+`envs`、`work`、`outputs` 和 `certs` 不属于源码，不应放入最终课程源码压缩包。
+`certs/key.pem` 是本机服务私钥，不能发送给手机或提交 Git。
 `requirements.lock.txt` 会在完整环境检查通过后生成，记录本次真正安装的版本，方便以后复现。
 锁文件内的官方 CUDA 附加索引用于获取带 `+cu128` 标记的 GPU 包。
 
@@ -284,10 +308,10 @@ Detector 初始化前会关闭 YOLO_AUTOINSTALL，依赖安装由 setup_env.ps1 
 ```
 
 当前可检查 `http://localhost:8000/api/health` 和 `http://localhost:8000/api/logs`。
-`/` 与 `/pc` 返回 `web/index.html`，加载前端入口 app.js；点击“开始检测”后请求当前设备的摄像头，准备好再连接电脑检测服务。
+`/` 与 `/pc` 返回 `web/index.html`，加载页面入口 start.js；先查询服务模式，再加载对应模块。浏览器模式点击“开始检测”后请求当前设备的摄像头，准备好再连接电脑检测服务；IP 模式需勾选确认后点击“开始读取”。
 页面上的服务端日志链接可以直接使用，其余待接入按钮保持禁用。
 新增 web 目录后须重新启动已有服务，才能注册 `/static` 路由。
-当前服务仅接入 SOURCE=ws；P2 才实现 IP 摄像头读取，不能仅改配置就认为该功能已完成。
+服务已接入 SOURCE=ws 和 SOURCE=ipcam 的后端与页面流程。IP 视频源必须单独确认启动；页面接入不代表手机真实 IP 视频源已验收。
 
 服务模块的阅读顺序：
 
@@ -493,7 +517,7 @@ camera.js 的预览阶段最初使用“开启预览/停止预览”；现由 ap
 4. `waitForVideo(video, signal)` 使用 Promise 等待加载/尺寸事件与播放完成；超时或取消时清理计时器和监听。await 让调用方等待结果，不阻塞浏览器处理“停止”按钮。
 5. `stop()` 让旧请求编号失效、取消等待，通过 closeStream 停止所有轨道，清空视频来源和画布；重复调用安全。getUserMedia 本身不能通用取消，迟到的流会检查编号并立即释放。
 6. `syncSize()` 读取 videoWidth/videoHeight，同步 video 属性和 canvas 像素尺寸；尺寸改变时发出 resize，供后续叠框模块使用。更改 canvas 尺寸会清掉旧框。
-7. `setMirrored(enabled)` 只翻转视频显示，并保存 mirrored 状态；传给模型的原图方向不变。后续绘框需据此转换横坐标，标签文字保持正向。
+7. `setMirrored(enabled)` 接收是否左右翻转，更新视频显示和 mirrored 状态；传给模型的原图方向不变。绘框根据该状态转换横坐标，标签文字保持正向。页面默认勾选“左右镜像”，bindCameraPage 初始化时主动同步一次，因为默认勾选不会触发 change 事件。
 8. `bindCameraPage(camera)` 将按钮、方向与镜像选择接到实例；通过 statechange 更新禁用状态、空画面与提示，通过 started/resize 更新尺寸。离开页面 pagehide 时停止设备。
 
 模块使用 EventTarget/CustomEvent 发布 started、stopped、resize、mirrorchange、statechange、ended 事件；
@@ -638,3 +662,334 @@ FastAPI/Pipeline/YOLO11n → 浏览器人物框。它检查默认 JPEG 尺寸、
 本次通过 P1 PC 人物检测、回框、叠框与 FPS 的基本验收；后续进入 P2 手机接入。
 未验证长期实拍稳定性、完整端到端延迟、身份识别、跟踪、锁定和重识别。
 后续再次使用隐私设备仍须取得对应范围的明确授权。
+
+## P2：证书准备与统一启动入口
+
+这两个工具为手机接入准备 HTTPS，目前只完成本机验证，不代表手机已经信任证书或能调用摄像头。
+脚本不会自动打开浏览器、访问隐私设备、安装根证书或修改防火墙。
+
+在项目根目录运行 PC 模式：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run.ps1
+```
+
+默认访问 http://localhost:8000/pc，服务只监听本机，按 Ctrl+C 停止。
+直接运行时会加载模型；只检查启动条件可添加 `-CheckOnly`，它不启动服务或访问摄像头。
+
+生成手机 HTTPS 所需的方案 B 自签证书：
+
+```powershell
+& .\envs\vitrack\python.exe -X utf8 .\scripts\gen_cert.py
+```
+
+默认在项目 certs 中生成 cert.pem 和 key.pem，有效期 365 天；
+SAN 包含 localhost、回环地址和当前本机 IPv4 地址。SAN 是证书允许使用的网址/地址清单。
+重复执行时会检查并复用已有完整证书；缺文件、过期或 IP 不匹配时直接报错，不覆盖。
+`--ip` 可重复指定地址，`--days` 只决定新证书有效期，`--output-dir` 可改证书目录。
+网卡地址改变后，可在新目录生成，再把 .env 的 HTTPS_CERT、HTTPS_KEY 指向新文件。
+私钥留在电脑，不能发给手机；本工具不生成或安装受信任根 CA。
+
+当前电脑有 WLAN、以太网和 VMware 网卡，手机地址应选与手机同网的真实网卡。
+本轮 WLAN 地址为 10.63.77.164，实际使用前可用以下命令复查：
+
+```powershell
+Get-NetIPAddress -AddressFamily IPv4 | Format-Table InterfaceAlias,IPAddress
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run.ps1 -Mode phone -LanIP 10.63.77.164 -CheckOnly
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run.ps1 -Mode phone -LanIP 10.63.77.164
+```
+
+手机模式默认采用 .env/默认配置的 APP_HOST=0.0.0.0、APP_PORT=8443，打印手机 HTTPS 地址。
+0.0.0.0 表示服务监听网卡，不能把它作为手机访问地址；多网卡时必须显式指定 `-LanIP`。
+手机应与所选网卡处于可互通的同一网络，地址变化时同步检查证书。
+纯自签证书在某些手机上即使“继续访问”，也仍可能无法使用摄像头；
+按原方案最多尝试 5 分钟，不可用就进入 mkcert 方案，不以关闭客户端验证冒充已受信任。
+
+`run.ps1` 参数：
+
+- `-Mode pc`：默认 HTTP 8000，仅监听 127.0.0.1；`-Mode phone`：HTTPS，端口读取应用配置。
+- `-Port 8444`：覆盖本次启动端口，不改 .env。
+- `-LanIP 地址`：手机要访问的本机网卡 IPv4；非本机地址会被拒绝。
+- `-BindAddress 地址`：改变服务监听地址；手机模式仅接受 0.0.0.0 或所选 LanIP。
+- `-CheckOnly`：检查后返回计划，不启动服务；端口占用时不会终止原有服务。
+
+实现与阅读顺序：
+
+1. 先看 `run.ps1` 主流程：定位项目 Python → 临时切到项目目录 → 取得计划 → 打印地址 → 前台启动。
+   `finally` 保证退出或报错后恢复原来的工作目录。
+2. `New-LaunchPlan` 接收模式、端口、监听地址和手机 IP。
+   它把参数 JSON 编码后交给项目 Python，调用 app.config.load_config 复用默认值/.env/进程变量优先级，
+   再调用 gen_cert 的证书检查、试绑定端口，输出 Uvicorn 参数与地址。
+   不重复实现配置解析。SOURCE=ipcam 只允许 -Mode pc，启动服务本身不连接视频源；访问打印的 /pc 页面，勾选确认并开始后才读取。
+3. `Show-AccessUrls` 接收计划，输出 PC 地址、手机 HTTPS 提示和 IP 摄像头模式状态；
+   实际启动通过参数数组调用 Python，避免路径空格被拆开。
+4. 再看 `gen_cert.py`：`main` 读取参数；`local_ips` 查询并去重本机地址；
+   `create_certificate` 根据 IP 和天数生成 RSA 私钥、带 SAN 的自签证书，或复用已有完整文件；
+   `check_certificate` 校验有效期、密钥配对和 SAN，返回到期时间等公开信息。
+   写入循环只创建两份新文件，失败只移除本次新建文件，不覆盖原证书。
+5. 最后看 `app/config.py` 的参数和 `app/main.py` 的服务入口；启动工具只复用它们，没有改检测业务。
+
+实际检查通过：IPv4/IPv6/localhost SAN、重复执行、异常 IP、缺失文件、不配对私钥、过期证书；
+PC/手机启动计划、多网卡拒绝、端口占用与错误监听地址均已验证；当时 ipcam 尚未实现，现已通过本文后续接口检查；
+从其他工作目录实际启动 HTTP 与 HTTPS，健康和静态资源正常。
+HTTPS 客户端显式信任本次证书并验证地址，经 WSS 发送项目官方样例，返回 4 个人物；
+这是样例图检查，首帧包含冷推理，不是手机实拍帧率测试。
+验证服务、子进程及端口已释放，本轮没有访问物理摄像头，没有安装系统信任。
+报告：outputs/certificates/certificate_check_report.json、outputs/startup/startup_check_report.json。
+
+上述证书和启动工具之后，已完成以下 IP 视频源后端流程；P2 仍未整体验收，不创建 P2 阶段提交。
+
+## P2：IP 视频源读取与服务接口
+
+上一组先完成读取器和服务端接口；当时 IP 模式 /pc 暂时返回中文 503，防止旧页面误请求电脑摄像头。
+当前观看页面已经接入，两种模式的 /pc 均返回页面；start.js 按服务模式分派，IP 模式不会加载电脑摄像头模块。
+
+新增 app/ipcamera.py：
+
+- `CapturedFrame` 保存采集序号与 BGR 图像，供主服务调用，不保存文件。
+- `IpCamera(url, ..., max_side)` 只校验地址和参数，构造时不连接；只接受 http/https/rtsp，
+  不接受数字摄像头编号或本地视频文件。
+- `start()` 启动独立读取进程，重复调用不重复连接；
+  子进程 `_read_stream` 持续读取、按最长边缩放，再覆盖共享内存中的上一帧。
+- `read(timeout)` 在限时内复制最新完整图像并返回；没有新图时返回 None。
+  帧序号可能跳号，这是丢弃旧帧以降低积压，不是传错顺序。
+- `status()` 只返回状态、序号和错误码，不包含完整地址、密码或图像。
+- `stop()` 先请求退出，再限时终止阻塞进程，释放共享资源；重复停止安全。
+
+图像使用固定大小的单帧共享内存，不通过大消息队列传输。进程异常结束时，不会让父进程
+卡在半个图像消息中。共享锁保证像素与尺寸一致；读者在锁内复制图像后再推理，
+防止下一帧覆盖正在使用的像素；获取锁也有限时，异常退出不造成无限等待。
+
+app/main.py 的服务流程：
+
+- `require_ipcam` 和 `ipcam_status` 检查模式、输出公开状态；
+  `prepare_ipcam_frame` 在内存中编码预览；
+  `run_ipcam` 在线程内等待读取/编码，调用已有 Pipeline.process_frame 检测，再发布一份最新结果。
+- `stop_ipcam_task` 在停止或退出服务时取消任务、停止读取进程、清除预览；
+  开始/停止共用异步锁，因此并发操作按顺序执行。
+- `next_ipcam_packet(after)` 等待更新的结果，停止或失败就结束等待；
+  条件变量只负责唤醒观看连接，不为每个观看者重复执行检测。
+- 每个结果包中 img、w/h、result 来自同一张图，包序号等于 result.seq；
+  发布序号跨开始/停止递增，避免客户端拿旧序号等待时收不到重启后的结果。
+
+接口约定：
+
+- GET /api/ipcam/status：只查询，不能触发网络读取。
+- POST /api/ipcam/start：必须提交 JSON `{"confirm": true}` 才连接配置的视频源；
+  缺少确认、false、字符串或数字冒充布尔值都会被拒绝。
+- POST /api/ipcam/stop：停止并清除预览，重复调用安全。
+- /ws/ipcam：客户端发 `{"type":"next","after":0}`，收到更新的
+  `{"type":"ipcam_frame","seq":...,"w":...,"h":...,"img":...,"result":...}`。
+  img 是同帧 JPEG 的 Base64；下次 after 使用已显示序号，一问一答避免慢客户端积压。
+  仅连接观看接口不会开启视频源。
+- SOURCE=ipcam 时拒绝 /ws/stream 的浏览器推帧；SOURCE=ws 时拒绝 IP 源控制和观看接口，
+  防止两种采集方式混在一起。
+
+app/schemas.py 增加 IpCameraStart 和 IpCameraPull，分别检查确认布尔值与观看序号。
+app/pipeline.py 仅更新说明，两个入口继续共用现有检测逻辑；没有另建一套模型。
+scripts/run.ps1 已接受 ipcam 的 PC 模式，打印观看页面与状态地址；phone 模式仍用于浏览器推帧。
+.env.example 说明默认不读取、需在观看页面确认启动。
+
+参数准备方式（真实手机地址应以手机 App 显示为准）：
+
+```ini
+SOURCE=ipcam
+IPCAM_URL=http://<手机实际IP>:8080/video
+MAX_SIDE=640
+JPEG_QUALITY=0.65
+```
+
+读取模式的 MAX_SIDE 控制缩放和共享内存容量，JPEG_QUALITY 控制返回预览的压缩质量；
+调高可保留细节，也会增加内存、编码和传输开销。浏览器推帧的压缩参数仍由 web/app.js 管理。
+读取器默认打开超时 5000ms、读帧超时 2000ms；只有明确需求时再调整模块参数，
+否则过长的超时会延迟断流提示。失败不会自动重连，需用户决定是否再次启动。
+
+tests/test_ipcamera.py 只在 127.0.0.1 提供项目官方图片构成的 MJPEG 样例流，含协议用的测试检测器，
+并另有真实 YOLO 检测测试；不会连接物理设备。运行命令：
+
+```powershell
+& .\envs\vitrack\python.exe -X utf8 -m pytest .\tests\test_ipcamera.py --basetemp=work/ipcam_pytest -q
+```
+
+本轮最终 13 项测试通过：不自动读取、旧帧覆盖、重复开始/停止、阻塞时停止、断流、
+进程异常退出、确认校验、同帧图像/框、多观看连接、模式隔离、重启序号、原浏览器路径回归、
+真实 YOLO 经样例 IP 流返回 4 人，以及启动脚本只检查不读取。
+这些测试含参数化用例，不是 13 次手机实拍。当前只实测 HTTP MJPEG，
+HTTPS/RTSP 视频源、手机真实网络、完整页面和 5 分钟不断流仍待验证。
+报告：outputs/ipcam/ipcam_check_report.json，只含数值和检查结论。
+
+后端建议阅读顺序：main.py 的 start_ipcam → run_ipcam → ipcamera.py 的 start/read/stop →
+schemas.py 的请求格式 → tests/test_ipcamera.py。页面接入和手机准备结果见下节；P2 仍未整体验收。
+
+## P2：模式分派与 IP 观看页面
+
+页面现在从 index.html → start.js 开始。initializePage() 读取 /api/health，
+只有明确得到 ws 或 ipcam 才加载对应客户端；接口失败或未知模式时保持按钮禁用。
+ws 分支加载已有 app.js，ipcam 分支只加载 ipcam.js，不导入 camera.js，也不请求本机摄像头。
+摄像头环境提示只检查安全上下文和 API 是否存在，不会请求权限。
+
+web/ipcam.js 的主要部分：
+
+- checkIpPacket(data)：输入服务端结果包，检查序号、尺寸、JPEG 文本和归一化框，输出通过检查的包；不一致就报错，防止图像和框错位。
+- decodeImage(jpeg)：输入 Base64 JPEG，在内存中异步解码为 Image；解码失败或超时就拒绝，不保存图片。
+- IpCameraClient(preview, overlay)：输入两层画布，管理确认、连接、接帧、绘制和停止状态，由 start.js 创建。
+- bind() 绑定按钮、镜像和页面可见性事件，但不启动源；start() 检查勾选确认，再调用开始接口和 connect()。
+- requestControl(path, body) 发送有限时的同源控制请求；connect() 建立 /ws/ipcam；requestNext() 只发送 next/after，最多等待一帧。
+- receive(text, generation) 校验包、等待图像解码、核对尺寸并更新画面，再请求下一帧。generation 是本次会话编号，停止后旧异步结果不能恢复画面。
+- render() 先画图像，再逐个把 0～1 的框坐标换算为画布像素；镜像同时转换图像和框，标签文字保持正向。
+- stop() 先关闭本地连接、清画面，再等待可能迟到的开始请求完成，最后请求服务端停止；停止失败保留重试按钮，不显示虚假的成功。
+- closeTransport() 释放连接和计时器，clearPreview() 清空画面与指标；切后台时停止读取，不自动重连。
+
+index.html 提供 IP 确认区域和预览 Canvas，style.css 保持图像与叠框同尺寸。
+main.py 的 /pc 现在向两种模式返回页面，run.ps1 打印可访问的观看网址。
+停止电脑读取不等于关闭手机摄像头 App，后者必须在手机上自行结束。
+
+阅读顺序：start.js 的 initializePage → ipcam.js 的 bind/start → requestNext/receive → render → stop，
+最后看 tests/test_ipcam_page.py 的页面生命周期检查。浏览器推帧分支仍可按 app.js → camera.js 阅读。
+IP 模式的 SOURCE、IPCAM_URL、MAX_SIDE、JPEG_QUALITY 含义见上节；
+ipcam.js 顶部控制请求/连接/解码超时均为 10 秒，等待结果为 20 秒，过短可能使冷启动被误判为超时，通常保持默认。
+
+实际验证命令：
+
+```powershell
+& .\envs\vitrack\python.exe -X utf8 -m pytest tests/test_ipcamera.py tests/test_ipcam_page.py --basetemp=work/viewer_pytest -q --disable-warnings --maxfail=1
+```
+
+结果为 14 passed、3 warnings，37.02 秒，退出码 0。其中 Edge 测试拒绝摄像头和麦克风权限，
+getUserMedia 调用为 0；只用本机官方样例 MJPEG，经真实 YOLO 返回 4 个人物。
+覆盖未确认不连接、最多一帧在途、镜像、1365/390/320px 布局、停止、迟到启动、停止失败后重试、撤销确认、坏 JPEG 和未知模式。
+摘要：outputs/viewer/ipcam_page_report.json。
+
+更新后的 verify_stream.py 也从 start.js 入口验证原 ws 分支，使用固定样例合成流：
+3.001 秒完成 63 帧，20.993 FPS，4 个人物，最多一帧在途；合成轨道及临时服务已释放。
+摘要：outputs/viewer/ws_bootstrap_report.json。以上均不是手机实拍性能。
+
+手机准备：安卓与电脑同 Wi-Fi，2026-10-18 用户确认能打开 https://10.63.77.164:8443，
+并看到“安全环境已就绪，开启前仍需授权”。随后在本次明确授权范围内完成了手动采集测试，结果见下节。
+当前供手机查看的服务使用 SOURCE=ws，启动器 PID 为 22880，信息见 outputs/phone/service_info.json。
+地址随电脑网卡变化；无需为查看状态点击开始检测。
+真实手机 IP 源及其 5 分钟稳定性、HTTPS/RTSP 视频源仍待验证，暂不创建 P2 阶段提交。
+
+## 手机浏览器人工验收与默认镜像
+
+2026-10-18 用户明确同意：本次安卓摄像头测试最多 6 分钟，由用户手动开始和停止，
+画面仅经同 Wi-Fi 的 HTTPS/WSS 传到本机内存检测，不保存或发送到互联网，不使用麦克风，只保留数值与文字结论。
+用户先确认实时画面中人物有白框，随后确认“已满5分钟，画面和检测持续正常”，
+停止后“预览消失，摄像头使用提示结束”。据此记录浏览器模式的人工验收通过，不推算未测量的 FPS、帧数或准确率。
+持续数值采样命令被自动审批审核拒绝，返回 blocked by policy，命令未启动；没有该次自动采样报告，未绕过拒绝重试。
+本次授权已结束，不能用于后续重新打开设备。
+
+用户反馈原画面看起来别扭，因此页面现在默认勾选“左右镜像（画面与检测框同步）”。
+index.html 提供默认值，camera.js 的 bindCameraPage 调用 setMirrored 同步浏览器视频，
+ipcam.js 的 bind 同步 IP 客户端的 mirrored；两个模式均可取消勾选恢复原方向。
+浏览器模式只翻转预览和框，IP 模式在 render 内翻转图像和框；标签保持正向。
+刷新页面后生效，不需要重新启动后端服务；修改显示设置本身不会打开摄像头。
+
+镜像改动后，既有 tests/test_ipcam_page.py 调整为先验证默认镜像，再取消勾选建立原方向基线，
+继续检查镜像像素和框位置。运行该文件结果 1 passed、3 warnings，16.63 秒。
+verify_stream.py 的固定样例推帧回归也通过：3.011 秒完成 57 帧，18.929 FPS，4 人，最多一帧在途，
+报告 outputs/viewer/mirror_stream_report.json；测试摄像头/麦克风权限均 denied，没有重新使用物理摄像头。
+该短样例吞吐不代表手机性能，且两项检查曾同时运行，不能与此前独立运行的数据直接比较。
+
+## 检测框坐标平滑与误检边界
+
+用户进一步确认，误检的是无人穿的衣服，分数在 0.5 以上。这是高分衣物误检反馈，
+不能靠把 DET_CONF 简单调到 0.5 就宣称解决。本轮没有改变模型、检测门槛或原始分数。
+用户还确认人物框一直存在，主要是边缘和大小频繁抖动，因此加入仅用于显示的坐标平滑。
+平滑不会判断衣物与真人，也不是后续 ByteTrack 的轨迹编号或身份识别。
+
+新增 web/box_smoother.js，两个客户端各自拥有一个 BoxSmoother：
+
+- overlap(first, second) 接收两个框，输出交并比，用于衡量前后帧位置是否明确重合。
+- smallChange(previous, current) 检查位移和缩放幅度；变化明显时不沿用旧坐标，减少拖尾。
+- update(boxes, width, height, now) 接收已校验的当前框、图像尺寸和毫秒时间。
+  先找同类别、同轨迹编号（若有）的重合框；多个旧框难以区分时直接显示当前框。
+  配对按重合程度排序，并用 Set 保证一个旧框最多使用一次。
+  对小幅变化按“新显示坐标 = 0.35 × 当前坐标 + 0.65 × 上次显示坐标”计算。
+  输出框数量、score 和其他字段均来自当前帧，只改变 xyxy，不修改传入结果。
+- reset() 清空上帧框、尺寸与时间；空帧也立即清除目标，不保留不存在的“幽灵框”。
+  尺寸变化或结果间隔超过 500ms 时自动重置。
+
+web/app.js 的 receive 校验同帧、同尺寸后调用 update，drawBoxes 绘制并进行镜像换算；
+停止/重连和摄像头 resize 时调用 reset。web/ipcam.js 在 receive 解码图像后调用 update，
+render 绘制，clearPreview 清理历史。每个客户端独立保存历史，不把页面之间的目标混合。
+阅读顺序：box_smoother.js 的 update → overlap/smallChange → app.js 的 receive/closeTransport →
+ipcam.js 的 receive/clearPreview → tests/test_box_smoother.py。
+
+可调整的参数是 BoxSmoother 构造函数中的 alpha（默认 0.35，范围大于 0 且不超过 1）：
+小一些更平稳，但位置滞后可能增加；大一些更灵敏，1 表示直接使用当前坐标。
+先保留默认值，后续需要在新的明确授权范围内验证真实画面的改善程度；刷新页面本身不会开启设备。
+
+样例检查：
+
+```powershell
+& .\envs\vitrack\python.exe -X utf8 -m pytest tests/test_box_smoother.py tests/test_ipcam_page.py --basetemp=work/smoothing_page_pytest -q --disable-warnings --maxfail=1
+& .\envs\vitrack\python.exe -X utf8 scripts/verify_stream.py --duration 3 --report outputs/viewer/smoothing_stream_report.json
+```
+
+第一项结果 2 passed、3 warnings，19.54 秒。合成坐标检查累计边缘位移小于原始值的 40%，
+并检查原始分数保留、明显移动跟随、空帧/换尺寸/超时重置、类别和轨迹编号隔离、旧框不重复分配。
+IP 页面检查镜像、布局、停止和清理仍通过。第二项固定样例回归 3.001 秒完成 66 帧，21.992 FPS，
+4 个目标、最多一帧在途，停止后平滑历史与合成轨道均释放。上述数值不是手机实拍性能。
+摄像头/麦克风权限均 denied，本轮没有使用物理设备、保存或外传实拍内容。
+摘要见 outputs/viewer/smoothing_check_report.json；衣物误检与实际抖动改善仍待独立验证。
+
+## 公开样例的衣物误检诊断
+
+协作规则现为每三个关键步骤集中讲解一次，见 AGENTS.md；过去里程碑保留当时的汇报节奏。
+本组准备公开样例、实现离线诊断入口，并实际对照参数；没有重新开启设备或保存用户实拍。
+
+data/samples/clothing 内有三张公开图片：衣柜衣物、窗边悬挂外套、含两名真人及悬挂外套的展厅。
+作者与许可见该目录 README.md；下载后的内容经过目视核对。
+加上已有公交车样例，共四张图、六个粗略人物框，其中两张图没有真人。
+detection_cases.json 保存每张图的 SHA256、来源、人物框与衣物区域，确保后来检查的是同一版本。
+人物标注只用于小规模问题诊断，不能作为正式数据集精度或 mAP。
+
+离线入口：
+
+```powershell
+& .\envs\vitrack\python.exe -X utf8 scripts/evaluate_detection.py --check-only --output outputs/detection_review/input_check.json
+& .\envs\vitrack\python.exe -X utf8 scripts/evaluate_detection.py --output outputs/detection_review/resize_comparison.json
+& .\envs\vitrack\python.exe -X utf8 scripts/evaluate_detection.py --jpeg-quality 65 --output outputs/detection_review/jpeg_comparison.json
+```
+
+第一条只校验文件和内存预处理，不加载模型。第二条模拟最长边 640 的缩放输入，
+第三条在同样缩放后增加质量 65 的 JPEG 往返，观察传输条件的影响。
+脚本只读取已保存的本地样例，不启动服务、不访问摄像头、不联网下载、不修改 .env。
+缺少图片或 SHA 不符时会停止，需要按清单中的公开下载地址另行准备原文件。
+
+scripts/evaluate_detection.py 的阅读顺序与核心部分：
+
+- main() 是入口：读取参数、验证输入、执行评估、写数值 JSON；退出码 0 表示工具成功运行，不代表检测没有误检。
+- parse_args() 检查输入尺寸、门槛、压缩质量和输出路径；报告不能覆盖清单、模型或图片。
+- load_cases() 把清单转换为 DetectionCase；逐个核对文件路径和 SHA256，checked_box() 拒绝越界或反向标注。
+- prepare_image() 在内存中解码、等比例缩放、按需 JPEG 压缩再解码，不输出新图片。
+- run_evaluation() 遍历检测输入尺寸和门槛，对每张图调用现有 Detector.detect，再由 Box.from_detection 归一化坐标。
+- score_boxes() 调用 box_overlap()，按交并比将预测框与真人框一对一配对。
+  已配对人物数是检出；剩余预测是误检，未配对人物是漏检。重复框不能重复记作检出；
+  误检框中心位于已标注衣物区域时另计一项，以定位衣物误检。
+- compare_runs() 只列出本组样例上误检更少且漏检不增加的候选，不自动应用正式配置。
+
+测试入口 tests/test_detection_review.py：合成框检查重复框、错位置、高分衣物误检记账、漏检取舍，
+并检查真实公开文件的 SHA、内存缩放/JPEG、非法标注和失败报告不能覆盖损坏清单。
+实际运行 8 passed，0.60 秒；没有加载 YOLO 或访问隐私设备。
+
+实际参数对照共两种传输条件 × 两个模型输入尺寸 × 四个门槛 × 四张图片，即 64 次离线预测。
+模型输入尺寸为 640/960，门槛为 0.35/0.5/0.65/0.8；源图片先缩到最长边 640，
+因此这里的 960 是检测模型内部放大，不等于提高手机采集清晰度。
+
+未额外 JPEG 压缩时：默认 640/0.35 检出六个人物框，误检一件窗边外套，分数约 0.5086；
+门槛 0.5 仍误检该外套；0.65 消除该次误检但漏掉一名真人，0.8 漏掉两名。
+内部尺寸升到 960 时未出现误检更少且漏检不增加的候选。
+JPEG 质量 65 时，该外套的默认分数约 0.4871，部分候选能通过这四张图，但与未额外压缩的结果不一致；
+不能把仅在一个传输条件下的小样例通过当成已修复用户现场问题。
+
+结论：保留实时默认值 DET_CONF=0.35、DET_IMGSZ=640，不改变原始分数。
+高分衣物误检仍未解决；下一组优先检查提高实际输入清晰度的效果，再评估是否需要其他复核策略。
+报告见 outputs/detection_review 下的 input_check.json、resize_comparison.json、jpeg_comparison.json。
+各次 detect_ms 含冷启动影响，不能用于宣称端到端延迟或持续 FPS。
+
+可调整参数：--image-sizes（32 的倍数，影响模型内部尺寸）、--thresholds（越高越严格，也可能漏人）、
+--input-max-side（送入检测前保留的像素上限）、--jpeg-quality（省略为不额外压缩）、
+--match-iou（预测与粗标人物配对的重合门槛，改变评分规则，不改变模型本身）、--device cpu 或 0。
+建议先读样例清单，再读 main → run_evaluation → score_boxes，最后看测试。

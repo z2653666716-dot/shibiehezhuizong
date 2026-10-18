@@ -7,9 +7,9 @@
 ## 当前状态
 
 - 日期：2026-10-18。
-- 当前大阶段：P0 已验收并提交（cc20f2e）；P1 PC 人物检测闭环与 GPU FPS 基本验收已通过，本轮创建本地阶段提交；下一阶段为 P2 手机接入。
+- 当前大阶段：P0 已提交 cc20f2e；P1 已提交 c974f51；P2 手机接入验收完成，两种模式均有用户 5 分钟运行及停止释放确认，23 项测试通过。衣物误检提高实际像素后无改善，按用户最新要求记为已知限制并暂缓修改，优先进入 P3；实拍平滑改善未复测，不宣称已经验证。
 - 已完成：项目规则、独立环境、项目依赖、GPU 实测、模型下载、镜像检查、单图 GPU 检测及当前需要的目录与说明文件。
-- 业务服务入口为 `app.main:app`，由 Uvicorn 加载；前端入口 web/index.html 加载 web/app.js。已实际验证 PC 摄像头、JPEG、WebSocket、GPU 检测和白框绘制；本次物理摄像头约用 36 秒，30 秒计时窗口约 27.4 FPS。手机、跟踪、锁定和重识别待后续阶段。
+- 业务服务入口为 `app.main:app`，由 Uvicorn 加载；前端入口 web/index.html 加载 web/start.js，按来源选择 app.js 或 ipcam.js。P1 曾授权验证 PC：约用 36 秒，30 秒计时窗口约 27.4 FPS。手机浏览器结果为用户人工反馈，没有自动 FPS 采样；最新默认镜像修改仅用样例验证，未重新打开设备。跟踪、锁定和重识别待后续阶段。
 - 本次隐私范围：不保存或向外部上传实拍内容，只保留数值与结论。前面各里程碑按发生时状态记录，以本节和末尾最新实机记录为当前结论。
 
 ## 已完成：保存项目规则
@@ -92,9 +92,9 @@
 - 模型 SHA256：`0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1`（本次文件指纹，不冒充官方公布摘要）。
 - 原始安装与模型日志保存在 `work/`；环境、缓存和生成结果已由 `.gitignore` 排除，模型与样例图随源码记录。
 
-## 下一里程碑
+## 下一组步骤
 
-P1 基本验收完成后，下一里程碑为 P2 的手机访问启动与 HTTPS 准备；本轮不提前实现。再次使用摄像头等隐私设备时，仍须取得对应范围的明确授权。
+后续按用户最新要求，两步一汇报。下一组先接入 IP 视频源观看页面，再配合安卓手机验证 HTTPS 连通与证书信任。用户已确认安卓、与电脑同 Wi-Fi，并表示可随时配合；尚未进行手机取流或获得自动访问手机摄像头的授权。
 后续单独接入样式、前端取流/传帧/叠框与诊断交互；保持逐关键里程碑讲解与暂停。
 
 ## P1：配置模块里程碑
@@ -331,11 +331,227 @@ P1 基本验收完成后，下一里程碑为 P2 的手机访问启动与 HTTPS 
   并按阶段要求创建 P1 本地 Git 提交，仅提交源码、配置和说明，不包含 outputs、work、envs 或任何实拍内容。
 - 下一里程碑 P2：准备手机接入的启动和 HTTPS；手机实测、5 分钟稳定性、IP 摄像头模式仍未开始。
 
+## P2：证书工具与启动入口（两步一汇报）
+
+- 用户最新要求后续每两个关键步骤集中汇报，已更新 AGENTS.md；本轮完成两个脚本及必要验证后暂停，不提前实现后续模块。
+- 步骤一：新增 scripts/gen_cert.py，按第 9 节 P2 优先尝试方案 B，使用已安装 cryptography 生成项目内自签证书。
+  local_ips 查询网卡地址；create_certificate 生成或复用；check_certificate 检查有效期、SAN 与私钥配对；main 提供命令行。
+- 默认生成 certs/cert.pem 与 certs/key.pem，包含 localhost、127.0.0.1、::1 及当前网卡 IPv4，有效期 365 天。
+  旧文件不覆盖；过期、缺文件、IP 不匹配或不配对则明确失败，需在新目录生成并更新 .env。
+  未安装根证书、修改系统信任或修改防火墙；certs 已受现有 .gitignore 排除。
+- 实际运行：项目 Python -X utf8 scripts/gen_cert.py，退出码 0，action=created。
+  本机多网卡包含 WLAN 10.63.77.164、以太网 192.168.0.10 与两张 VMware 网卡；不能将候选地址直接视为手机已连通。
+- 证书检查通过：SAN IPv4/IPv6/localhost 与重复地址、原样复用、缺失 SAN IP、非法 IP/天数、残缺文件、
+  不配对私钥、过期证书及本机地址查询。报告 outputs/certificates/certificate_check_report.json。
+- 步骤二：新增 scripts/run.ps1，默认 PC HTTP 127.0.0.1:8000；phone 模式读取 APP_HOST/APP_PORT 和 HTTPS 文件。
+  New-LaunchPlan 复用 app.config.load_config 与证书检查，拒绝端口占用、错误网卡/绑定组合和未实现的 ipcam 模式。
+  Show-AccessUrls 打印真实可用地址或未实现提示；-CheckOnly 仅检查，正常模式前台启动 app.main:app，Ctrl+C 停止。
+- run.ps1 使用 UTF-8 BOM 兼容 Windows PowerShell 5.1 中文；参数 JSON 经 Base64 传递，输出 JSON 用 ASCII 转义，
+  避免此前 Windows 中文/引号/空参数传递问题。脚本不自动打开浏览器，不调用隐私设备。
+- 实际验证从 work 等非项目当前目录执行脚本：PC 与手机检查计划、多网卡歧义、非本机 IP、监听地址不符、
+  占用端口保护、未实现 SOURCE=ipcam 拒绝均通过。
+- 实际通过脚本启动 HTTP 和 HTTPS 服务：/api/health、/pc、静态资源正常；HTTPS 客户端显式信任本次证书并验证 SAN，
+  经 wss://localhost:<测试端口>/ws/stream 发送项目官方样例，seq=900 返回 4 个人物。
+  单张样例冷处理约 2927ms，不能解释为稳定帧延迟或手机实拍性能。
+- 首轮测试遇到 Windows 子进程退出后临时输出文件句柄释放稍晚，导致临时目录清理失败；
+  确认对应测试进程已退出后仅清理本次明确路径，测试工具增加 0.5 秒释放等待，完整重跑退出码 0。
+  既有受审核拦截的旧目录未触碰；未通过规避方式重试旧清理操作。
+- 最终启动报告 outputs/startup/startup_check_report.json，status=passed，共 10 项检查；
+  HTTP/HTTPS 子进程和测试端口均已释放，physical_camera_access=false、system_trust_modified=false。
+- 更新 README 命令、参数、函数和初学者阅读顺序。本轮源码与配置未包含任何实拍内容；未创建 P2 阶段提交。
+- 待完成：手机同网连通/自签证书信任验证（方案 B 最多 5 分钟，无效后按方案 A），IP 摄像头路径、
+  手机两种采集模式实际验收和 5 分钟不断流。P2 仍未通过整体验收。
+
+## P2：IP 视频源读取与后端控制流程（两步一汇报）
+
+- 本轮两步限定为读取模块和服务端异步接口；阅读现有页面后发现还需独立前端适配，因此明确告知页面留到下一组，未把多个核心模块强行合成一步。
+- 第一步新增 app/ipcamera.py：CapturedFrame 为序号/BGR 图像；IpCamera 构造不连接，start 后才由独立子进程 OpenCV/FFmpeg 读取指定网络流。
+- 输入只接受 http/https/rtsp，不接受数字物理设备编号或本地文件；配置 URL 不写入状态输出。
+  读取进程在内存中缩放并覆盖一个固定像素槽；读者限时获取锁后复制，避免半帧和旧帧积压。
+- 默认 max_side=640，打开超时 5000ms、读帧超时 2000ms；stop 先请求退出，再限时终止阻塞进程并释放共享资源。
+  考虑到 Windows 在终止进程时可能截断大图 Queue 消息，最终改用单帧共享内存，只以小队列传状态，补测异常退出。
+- 初次测试发现本机 OpenCV 4.14.0 没有 setLogLevel；移除该非必需调用，保留导入前环境设置和进程输出隔离。
+  不改动依赖或技术栈，HTTP MJPEG 样例读取实际通过。
+- 第二步修改 app/main.py：接通 SOURCE=ipcam 的读取对象、唯一后台处理任务、开始/停止和观看接口，
+  与 SOURCE=ws 共用已保存 Pipeline/Detector，不重复加载模型。
+- GET /api/ipcam/status 查询不启动；POST /api/ipcam/start 必须 JSON confirm=true；
+  POST /api/ipcam/stop 幂等释放；/ws/ipcam 以 next/after 一问一答发送同帧预览和检测结果。
+- run_ipcam 在线程内读取/编码，经 Pipeline.process_frame 检测后发布一份最新包；
+  包 seq 与 result.seq 一致，发布序号跨重启递增，多观看者共用同一处理结果。
+  停止、失败及 lifespan 退出时清除预览并释放进程；两种模式的错误接口调用会被拒绝。
+- app/schemas.py 新增 IpCameraStart、IpCameraPull，严格检查确认布尔值、类型和序号。
+  app/pipeline.py 仅改说明；.env.example 补充手动确认与页面待接入状态。
+- scripts/run.ps1 允许 ipcam 的 PC 模式并打印状态网址，拒绝 ipcam 的 phone 模式；
+  PC 检查计划不再做无关网卡查询，避免本机调试依赖网卡选择。
+- IP 模式下 /pc 暂时返回明确中文 503，防止旧页面误请求电脑摄像头；浏览器推帧模式页面仍为 200。
+  服务端接口可用不代表 IP 观看页面或 P2 已全部完成。
+- 新增 tests/test_ipcamera.py：在 127.0.0.1 以项目官方 bus.jpg 提供模拟 MJPEG，
+  大多数协议断言用测试检测器，另有真实 YOLO 测试，实际经样例 IP 流检出 4 个人物。
+- 最终命令：项目 Python -X utf8 -m pytest tests/test_ipcamera.py --basetemp=work/ipcam_pytest -q --disable-warnings --maxfail=1。
+  退出码 0，13 passed、1 warning，耗时 22.96 秒；此前首轮队列版本 12 项通过，最终版本补测异常退出后为 13 项。
+- 覆盖构造不连接、最新帧覆盖、重复启动/停止、阻塞时停止、断流、突然退出、无确认拒绝、
+  同帧 JPEG/坐标、双观看连接不重复连接源、重启单调序号、原浏览器 WS 路径、真实检测和启动计划不连接。
+- 报告 outputs/ipcam/ipcam_check_report.json 只保存数值与结论；本轮不连接物理摄像头、不保存或外传实拍画面。
+  只验证 HTTP MJPEG，本轮未验证真实 HTTPS/RTSP 视频源及手机网络。
+- 用户最新补充：可以随时协调手机测试；已确认 Android（安卓）、与电脑同一个 Wi-Fi。
+  这是接入准备信息，不扩展此前限时摄像头授权。
+- 更新 README、PROGRESS，按两步节奏收尾暂停；下一组接观看页面并协调手机 HTTPS 验证。
+  P2 的手机两种模式、5 分钟不断流与阶段提交仍未完成。
+
+## P2：IP 观看客户端与页面模式分派（两步一汇报）
+
+- 第一步新增 web/ipcam.js：checkIpPacket 校验同帧包，decodeImage 限时内存解码，IpCameraClient 管理确认、控制接口、WebSocket 拉帧、绘制和停止。
+  requestNext/receive 保持最多一帧在途；画完才请求下一帧，generation 阻止旧会话的异步结果恢复画面。
+  render 同步镜像图像与框，文字保持正向；stop 先清画面，再等待迟到的启动完成并请求停止，失败时保留重试入口。
+  切后台停止，不自动重连；停止电脑读取不等于关闭手机摄像头 App。
+- 第二步新增 web/start.js：initializePage 先读 /api/health，仅按明确的 ws/ipcam 动态导入唯一客户端；未知模式或失败时禁用操作，不猜测回退。
+  摄像头环境仅查询安全上下文和 API 是否存在，不打开设备。IP 模式不加载 app.js/camera.js，不调用 getUserMedia。
+- web/index.html 改加载 start.js，加入 IP 同意区域、预览画布和来源/环境字段；web/style.css 对齐预览与叠框。
+  app/main.py 取消上一组临时 IP 页面 503，两模式均返回页面；scripts/run.ps1 与 .env.example 更新观看入口说明。
+- tests/test_ipcamera.py 同步检查页面与静态入口；新增 tests/__init__.py 和 tests/test_ipcam_page.py，独立 Edge 的摄像头/麦克风均 denied，getUserMedia 调用始终为 0。
+  覆盖未同意不连接、真实样例检测 4 人、最多一帧在途、镜像、1365/390/320px 无溢出和对齐、正常停止、迟到启动、停止失败重试、撤销确认、坏 JPEG、4 类非法包和未知服务模式。
+- 实际命令：项目 Python -X utf8 -m pytest tests/test_ipcamera.py tests/test_ipcam_page.py --basetemp=work/viewer_pytest -q --disable-warnings --maxfail=1。
+  退出码 0，14 passed、3 warnings，37.02 秒；这是包含浏览器生命周期检查的测试用例数，不是 14 次实拍。
+  最后的摄像头环境提示字段随后加入，未重跑全部测试；安卓页面的实际显示已由用户确认。
+- scripts/verify_stream.py 增加 start.js 检查并等待模式分派完成，再运行原样例合成流回归；权限均 denied。
+  3.001 秒完成 63 帧，20.993 FPS，4 个人物，最多一帧在途；合成轨道及临时服务已释放。
+  报告 outputs/viewer/ws_bootstrap_report.json；IP 页摘要 outputs/viewer/ipcam_page_report.json，只含数值与结论，不包含画面。
+- 为手机手动查看保留独立服务：2026-10-18T19:42:42.331070+08:00 启动，启动器 PID=22880，SOURCE=ws，监听 0.0.0.0:8443。
+  手机地址 https://10.63.77.164:8443，电脑地址 https://localhost:8443/pc；信息 outputs/phone/service_info.json。
+  本机显式信任证书并验证 SAN 后检查 health/页面/start.js 通过，启动时处理帧数为 0；未安装根信任、修改防火墙或自动启动设备。
+- 用户手机实测反馈：Android、同 Wi-Fi、能看到 ViTrack 页面，且摄像头访问环境显示“安全环境已就绪，开启前仍需授权”。
+  仅确认 HTTPS 页面连通和 API 环境可用，尚未授权或启动手机采集，不能宣称手机摄像头检测或证书系统信任已验收。
+- README 同步当前入口、模块职责、参数和阅读顺序；历史里程碑保留当时状态。
+  下一组先明确手机摄像头测试范围并取得授权，再验证采集/回框/停止与持续运行；不扩展此前 PC 限时授权。
+  真实手机两种采集路径、HTTPS/RTSP 视频源及 5 分钟稳定性仍待验证；P2 未整体验收、不创建阶段提交。
+
+## P2：手机浏览器人工验收与默认左右镜像
+
+- 用户明确同意本次安卓摄像头测试最多 6 分钟（含 5 分钟持续运行），手动开始/停止；
+  数据仅经同 Wi-Fi HTTPS/WSS 传给本机内存处理，不保存画面、不发到互联网、不使用麦克风，只记录数值和结论。
+  这仅覆盖本次测试，已经结束，不是永久或其他设备授权。
+- 服务预检通过：source=ws、设备 RTX 3060 Laptop GPU、processed_frames=0；没有由代理自动开启手机设备。
+  用户确认“有实时画面，人物出现白框”，之后确认“已满5分钟，画面和检测持续正常”，
+  停止后确认“预览消失，摄像头使用提示结束”。据此记录安卓浏览器模式人工验收通过。
+- 持续数值采样命令被自动审批审核拒绝，返回 blocked by policy，未给出更具体原因；命令未启动。
+  未绕过拒绝重试，没有生成该命令计划的 browser_observation_report.json，不编造手机 FPS/帧数/准确率。
+- 用户提出画面需要翻转；按自拍左右镜像处理，保留可取消的开关。
+  第一步：web/index.html 将 mirror-preview 默认 checked，文案说明画面与框同步；
+  web/camera.js 在 bindCameraPage 内主动调用 setMirrored(mirror.checked)，因为初始 checked 不触发 change。
+  原 app.js 已根据 camera.mirrored 换算框坐标，标签保持正向，不改检测输入。
+- 第二步：web/ipcam.js 的 bind 也从开关读取 mirrored，确保 IP 模式默认显示一致且初始化不连接源。
+  tests/test_ipcam_page.py 同步既有检查：先断言默认镜像，再关闭镜像建立基线，随后验证翻转像素/框坐标/文字方向。
+- 样例验证命令：项目 Python -X utf8 -m pytest tests/test_ipcam_page.py --basetemp=work/mirror_pytest -q --disable-warnings --maxfail=1。
+  退出码 0，1 passed、3 warnings，16.63 秒；摄像头/麦克风均 denied，未访问物理设备。
+- 原浏览器路径回归：项目 Python -X utf8 scripts/verify_stream.py --duration 3 --report outputs/viewer/mirror_stream_report.json。
+  退出码 0，3.011 秒完成 57 帧，18.929 FPS，4 个人物，最多一帧在途；合成轨道及临时服务释放。
+  两项样例检查同时运行，其吞吐不能直接与此前独立测试比较，也不能作为手机实拍性能。
+- 更新 README、PROGRESS 和 outputs/phone/service_info.json。手机停止后刷新页面即可取得默认镜像设置；
+  后续重开设备需新的明确授权。下一组协调真实手机 IP 视频源及其稳定性测试，P2 阶段提交继续等待整体验收。
+
+## P2：真实手机 IP 视频接通与框跳动问题（验收进行中）
+
+- 用户已安装 IP Webcam，并明确同意本次最多 10 分钟（含准备及 5 分钟运行）的测试：
+  同 Wi-Fi HTTP/MJPEG（局域网这一段未加密）传到本机内存处理，不保存或向互联网发送画面，不使用麦克风。
+  用户随后反馈云广播、录制、音频已关闭，并提供手机地址 http://10.63.184.24:8080；使用 /video 作为 MJPEG 端点。
+- 2026-10-18T20:08:29.181379+08:00 启动独立 PC 观看服务，启动器 PID=43788，
+  SOURCE=ipcam，仅监听 127.0.0.1:8001，页面 http://localhost:8001/pc。
+  只在子进程环境设置视频地址，未改全局环境或 .env；启动后 idle、processed_frames=0，不自动连接。
+  信息保存在 outputs/phone/ipcam_service_info.json，不含画面。
+- 用户经页面确认并开始后反馈“有手机实时画面，人物出现白框”。
+  20:11:59 只查询一次无图像的状态：running，processed_frames=1785，fps=29.25，latency_ms=21.79。
+  这只是瞬时服务统计，不能解释为完整端到端延迟、5 分钟平均 FPS 或检测准确率。
+- 用户进一步指出白框跳动很快、置信度不是一直很高；当时尚未收到 IP 模式满 5 分钟及手机停止释放的确认。
+  代码检查发现两种模式当前均直接绘制逐帧原始检测框并逐帧更新置信度；尚无帧间跟踪和平滑。
+  不能只据此断定全部跳动原因，已询问是边缘抖动、反复消失/跳位还是重复框；不靠修改数字制造高置信度。
+- 已主动 POST /api/ipcam/stop，返回 idle、has_frame=false、result_seq=6786，电脑读取已停止并清除预览。
+  手机 App 需用户另外停止，当时释放状态待反馈；没有重新开启设备、保存画面或绕过此前数值采样审核拒绝。
+- 随后用户确认“已连续5分钟正常，两端都已停止”，手机摄像头使用提示“已经结束”。
+  用户进一步说明框一直存在、主要是边缘和大小频繁抖动，不是持续断流；另反馈照到一些衣服也出现人物框。
+  暂按衣物误检问题记录，已询问是无人穿衣物还是局部身体，以及原检测分数的大致区间；不要求重开设备或提供实拍。
+  两种模式的 5 分钟连续运行与停止释放均有人工确认，检测准确性和框显示稳定性单独保留未解决项。
+- 下一步按用户描述定位显示稳定性问题；原 10 分钟授权不延期，后续再开设备须重新确认范围。
+  本轮不宣布 P2 通过，也不创建阶段提交。
+
+## P2：显示坐标平滑与高分衣物误检记录（两步一汇报）
+
+- 用户明确补充：无人穿的衣服被框成人，分数在 0.5 以上。已把问题与位置抖动分开记录。
+  本轮不提高 DET_CONF、不修改原始 score，不宣称平滑能解决误检；后续需要可复核的负样例评估或检测策略改进。
+- 第一步新增 web/box_smoother.js：BoxSmoother.update 接收已校验框、尺寸和时间，
+  以同类别/同已有轨迹号及明确重合找到前后帧配对，一对一使用旧框；多个旧框难以区分时不平滑。
+  小幅变化采用 alpha=0.35 的坐标平均；明显位移/缩放直接跟随原框；人数、score、元数据保持当前值。
+  空帧立即清历史，尺寸改变/间隔超过 500ms 自动重置；reset 供页面停止/重连调用。
+  只保存上一帧的数值坐标，不保存图像、不建立身份，不替代既定 ByteTrack 方案。
+- 新增 tests/test_box_smoother.py：隔离 Edge、隐私权限 denied，仅以合成坐标检查平滑边界。
+  单模块检查先通过，1 passed、1 warning，8.97 秒；没有启动任何真实视频源。
+- 第二步修改 web/app.js 与 web/ipcam.js：各自创建平滑器，校验当前结果/尺寸后平滑坐标再绘制，
+  镜像仍在最终绘制时处理；停止、重连、换尺寸时清理历史。
+  tests/test_ipcam_page.py 增加当前历史数量与停止清理检查；scripts/verify_stream.py 同步检查浏览器分支的历史清理。
+- 接入后的最终检查：项目 Python -X utf8 -m pytest tests/test_box_smoother.py tests/test_ipcam_page.py --basetemp=work/smoothing_page_pytest -q --disable-warnings --maxfail=1。
+  退出码 0，2 passed、3 warnings，19.54 秒；合成抖动的累计边缘位移小于原始值的 40%，
+  分数保留、快速移动、消失/尺寸/时间间隔重置、类别/轨迹隔离、一对一使用旧框均通过。
+  IP 页面原有镜像、布局、迟到启动与停止异常处理仍通过。
+- 原浏览器模式固定样例回归：项目 Python -X utf8 scripts/verify_stream.py --duration 3 --report outputs/viewer/smoothing_stream_report.json。
+  退出码 0，3.001 秒完成 66 帧，21.992 FPS，4 个目标、最多一帧在途；停止后合成轨道、连接、平滑历史及临时服务释放。
+  摄像头/麦克风均 denied；本轮不连接手机、不保存实拍，不把样例坐标改善或短时吞吐当成实拍验证。
+- 更新 README 的目录、算法、参数与阅读顺序；摘要 outputs/viewer/smoothing_check_report.json。
+  高分衣物误检和真实抖动改善仍待后续验证，本轮无 P2 阶段提交，按两步节奏收尾暂停。
+
+## P2：公开衣物样例与离线参数对照（三步一讲解）
+
+- 用户最新要求“每三轮讲解一次，继续”。使用 create-rule 技能的上下文推断原则，
+  在既有 AGENTS.md 保存项目级“三个关键步骤及必要验证后集中讲解并暂停”，覆盖此前两步节奏。
+  用户已明确使用 AGENTS.md 保存协作要求，因此没有另建重复 .cursor 规则文件。
+- 第一步：新增公开样例清单 data/samples/detection_cases.json 和 clothing 目录。
+  取得衣柜衣物、窗边外套、展厅外套三张参考图片，逐张目视核对；与已有公交车图组成四张诊断样例。
+  两张无真人，公交车四名真人，展厅两名真人；墙上画像和无人外套不作真人标注。
+  所有新图为公开来源，非用户实拍；来源、作者、许可、修改说明及 SHA256 已保存。
+  窗边外套原图下载返回 HTTP 429，未重试同一地址；改取官方缩略图，其他两张原图成功。
+  每个资源至多使用两个来源地址；未下载其他候选图。
+- 第二步：新增 scripts/evaluate_detection.py，复用 Detector 和 Box 坐标转换，
+  从清单校验项目内文件、SHA 和手工框，再在内存做缩放/可选 JPEG 往返。
+  score_boxes 按 IoU 一对一匹配，分别统计配对人物、误检、漏检及衣物区域误检；
+  compare_runs 同时比较误检和漏检，不把“少画框但漏掉真人”列作无损改善。
+  报告只含数值/公开来源，无图像内容；不使用摄像头、不联网、不修改正式配置。
+- 新增 tests/test_detection_review.py：重复框、错位置、高分无人衣物误检、门槛取舍、
+  实际文件校验/内存预处理、SHA 异常、反向标注、报告不能覆盖损坏清单，共 8 项通过。
+  命令：项目 Python -X utf8 -m pytest tests/test_detection_review.py --basetemp=work/detection_review_pytest -q --disable-warnings --maxfail=1。
+  退出码 0，8 passed，0.60 秒；该测试没有加载 YOLO。
+  --check-only 实际通过，报告 outputs/detection_review/input_check.json，状态 inputs_checked_no_model_loaded。
+- 第三步：真实 YOLO11n 对四张公开图片分别执行最长边 640 缩放输入，以及缩放后 JPEG 质量 65 输入。
+  各自对照内部尺寸 640/960 与门槛 0.35/0.5/0.65/0.8，共 64 次离线预测，两次命令均退出 0。
+  注意 960 仅是模型内部尺寸，源图仍先缩至 640，不代表实际采集分辨率增加。
+- 未额外 JPEG 压缩：默认 640/0.35 配对六名真人、误检一件窗边外套（分数 0.5085531473），漏检零。
+  门槛 0.5 仍误检；0.65 误检降至零但漏一名真人，0.8 漏两名；内部尺寸 960 没有无损改善候选。
+  JPEG 质量 65：默认外套误检分数 0.4870781004；部分配置在该条件下能减少误检且不增加漏检，
+  但未在未额外压缩条件下成立，因此不作为跨场景默认调整依据。
+- 本组结论：已在公开样例复现与用户反馈相似的无人外套高于 0.5 的误检，未复现用户私有画面。
+  不修改 DET_CONF=0.35、DET_IMGSZ=640 或原始分数；高分衣物误检仍未解决，P2 不整体验收、不创建阶段提交。
+  四张粗标图只能诊断问题，不能作为通用准确率/mAP；detect_ms 含冷启动，不能当持续 FPS 或端到端延迟。
+  下一组优先评估增加实际输入清晰度，再决定其他复核策略；不重新调用已结束授权的隐私设备。
+- README 已补充命令、模块职责、参数和阅读顺序；数值报告分别为
+  outputs/detection_review/resize_comparison.json、jpeg_comparison.json，输入校验与结果分开保存。
+  本组三个关键步骤完成，收尾后集中讲解并暂停。
+
+## P2 收尾：提高实际像素一次，随后优先后续任务
+
+- 用户明确要求“先提高像素试一次，如果不行就先放弃修改这个问题，优先完成后面的任务”。已保存到 AGENTS.md。
+- 使用相同 YOLO11n 和门槛 0.35，将送入模型前的实际图片最长边与模型内部尺寸同时提高到 960；
+  仅对已有四张公开样例试一次，没有重新访问摄像头，没有扩大 JPEG/门槛搜索。
+- 命令：项目 Python -X utf8 scripts/evaluate_detection.py --input-max-side 960 --image-sizes 960 --thresholds 0.35 --output outputs/detection_review/higher_resolution_trial.json。
+  退出码 0，六名真人均配对，仍误检一件窗边外套，分数 0.6007409096。
+  与 640 基线同为 1 次误检、0 次漏检，没有改善，因此保留实时 640/0.35 默认值，停止本轮衣物问题优化。
+- P2 收尾检查：项目 Python -X utf8 -m pytest tests --basetemp=work/p2_acceptance_pytest -q --disable-warnings --maxfail=1。
+  退出码 0，23 passed、1 warning，40.44 秒。两个手机路径的 5 分钟与释放为此前人工反馈，未冒充自动采样。
+- P2 的 HTTPS/启动工具、两种采集/观看模式及基本检测链路完成，按阶段要求保存本地 Git 提交（提交号见 git log）。
+  衣物误检与实拍平滑效果边界完整保留，不把“暂缓优化”描述成已修复；未保存/提交任何用户实拍内容。
+- 下一步按顺序进入 P3：封装 ByteTrack、接入按会话隔离的轨迹编号；长按锁定与选择交互留待下一组。
+
 ## 后续功能待验收
 
 - 2026-10-18：本轮物理摄像头测试未先取得用户明确许可；用户指出后已停止，确认本任务相关测试进程全部退出。该轮不计入正式验收，没有保存实拍照片或视频。AGENTS.md 已加入隐私授权规则。测试文件和隔离浏览器目录清理命令被自动安全审核以 blocked by policy 拦截，不能宣称已经清理；不执行同一命令重试。
 
-- 长时间持续实拍的 FPS、完整端到端延迟与资源占用；本轮仅验证约 36 秒的 PC 基本闭环。
-- HTTPS、手机连通性、IP 摄像头模式、轨迹跟踪、锁定和重识别效果。
+- 长时间持续实拍的 FPS、完整端到端延迟与资源占用；PC 有约 36 秒数值检查，手机浏览器有 5 分钟人工稳定性反馈，没有手机自动 FPS 数据。
+- 手机两种模式的 5 分钟持续运行及停止释放均有人工确认；坐标平滑已通过样例检查，真实抖动改善待验证；无人衣物以 0.5 以上分数误检仍未解决；跟踪、锁定和重识别待后续阶段。
 - 手机上的导出与服务端下载操作。
 - P2～P7 功能与验收。

@@ -1,5 +1,5 @@
 /**
- * ViTrack 摄像头模块：获取视频流、等待可播放画面、同步画布，并可靠释放设备。
+ * ViTrack 摄像头模块：获取视频流、等待画面、同步画布和镜像设置，并可靠释放设备。
  * index.html 加载本模块后只绑定预览操作，不自动请求摄像头；必须由用户点击开启。
  * 后续 app.js 导入共享 camera，监听 started/stopped/resize 事件接入传帧与叠框。
  */
@@ -290,6 +290,9 @@ function bindCameraPage(camera) {
     if (camera.state === "running") open();
   });
   mirror.addEventListener("change", () => camera.setMirrored(mirror.checked));
+  // 初始化时也读取开关：页面默认勾选不触发 change，必须主动同步显示与绘框使用的状态。
+  // 这里只修改显示方向，不读取摄像头；后续 app.js 根据 camera.mirrored 换算框的位置。
+  camera.setMirrored(mirror.checked);
   camera.addEventListener("statechange", update);
   camera.addEventListener("resize", (event) => {
     frameSize.textContent = event.detail.width + " × " + event.detail.height;

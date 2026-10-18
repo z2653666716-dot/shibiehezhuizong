@@ -1,10 +1,11 @@
 /**
  * ViTrack 前端检测入口：摄像头取帧 → JPEG/Base64 → WebSocket → Canvas 检测框。
  * 复用 camera.js 的设备管理和后端 /ws/stream，不在浏览器运行检测模型。
- * 一次只保留一帧请求；页面停止、切后台、连接改变时使旧异步结果失效。
+ * 一次只保留一帧请求；box_smoother.js 平滑显示坐标，停止/换尺寸时清除历史。
  */
 import { camera } from "./camera.js";
 import { logger } from "./logger.js";
+import { BoxSmoother } from "./box_smoother.js";
 
 const MAX_SIDE = 640;
 const JPEG_QUALITY = 0.65;
@@ -93,6 +94,7 @@ export class DetectionClient {
     this.animation = null;
     this.lastCaptureAt = -Infinity;
     this.boxes = [];
+    this.smoother = new BoxSmoother();
     this.started = false;
     this.captureCanvas = document.createElement("canvas");
     this.captureContext = this.captureCanvas.getContext("2d");
@@ -126,6 +128,7 @@ export class DetectionClient {
     });
     this.camera.addEventListener("resize", () => {
       this.boxes = [];
+      this.smoother.reset();
       this.drawBoxes();
     });
     this.camera.addEventListener("mirrorchange", () => this.drawBoxes());
@@ -303,8 +306,14 @@ export class DetectionClient {
       this.nodes.count.textContent = String(this.received);
       this.nodes.frame.textContent = String(result.seq);
       // 旋转/换尺寸后回来的旧尺寸结果可以计数，但不能画到当前尺寸的视频上。
-      this.boxes = pending.sourceWidth === this.camera.video.videoWidth &&
-        pending.sourceHeight === this.camera.video.videoHeight ? result.boxes : [];
+      if (pending.sourceWidth === this.camera.video.videoWidth &&
+          pending.sourceHeight === this.camera.video.videoHeight) {
+        // 只平滑已通过校验的同尺寸框；人数和 score 仍属于当前帧，镜像在绘制时处理。
+        this.boxes = this.smoother.update(result.boxes, pending.sourceWidth, pending.sourceHeight);
+      } else {
+        this.boxes = [];
+        this.smoother.reset();
+      }
       const summary = this.boxes.length ? "检测到 " + this.boxes.length + " 个目标。" : "当前画面未检测到目标。";
       if (this.nodes.result.textContent !== summary) this.nodes.result.textContent = summary;
       this.drawBoxes();
@@ -364,6 +373,7 @@ export class DetectionClient {
     this.pending = null;
     this.encoding = false;
     this.boxes = [];
+    this.smoother.reset();
     this.drawBoxes();
     this.nodes.fps.textContent = "--";
     this.nodes.latency.textContent = "--";

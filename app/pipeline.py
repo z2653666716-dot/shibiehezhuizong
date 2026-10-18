@@ -1,7 +1,7 @@
 """串联一帧图像的解码、检测、坐标转换和结果组装，属于 ViTrack 的帧处理流水线。
 
-未来 WebSocket 接口调用 process_message；直接图像入口 process_frame 供后续摄像头读取流程使用。
-本模块调用 Detector 和 schemas，不打开网络端点或摄像头，P1 尚不进行跟踪或重识别。
+浏览器推帧接口调用 process_message；IP 视频源后台任务调用 process_frame，共用检测与结果格式。
+本模块调用 Detector 和 schemas，不自行打开网络端点或摄像头；跟踪与重识别仍待后续阶段。
 """
 
 import asyncio
@@ -72,7 +72,7 @@ class Pipeline:
         return await asyncio.to_thread(self._run, message, message.seq)
 
     async def process_frame(self, frame_bgr: np.ndarray, seq: int) -> FrameResult:
-        """处理直接提供的图像，为后续 IP 摄像头路径保留共同入口。
+        """处理直接提供的图像，由 IP 视频源后台任务调用共同入口。
 
         输入：BGR 数组和非负整数帧号；输出：与浏览器路径相同格式的 FrameResult。
         本方法不读取摄像头，调用方等待处理期间应保留该帧内容。
