@@ -43,24 +43,42 @@ class Gallery:
         return max(cosine(feature, template) for template in self.items[identity_id].templates)
 
     def supports(self, feature, identity_id):
-        """输入本帧特征与身份号，输出是否有足够证据；绑定和重入都调用此检查。
+        """输入本帧特征与身份号，输出布尔结果；判断规则由assess统一实现。"""
+        return self.assess(feature, identity_id)["accepted"]
 
-        同时检查原始注册模板、融合分数、独立外观/颜色和登记反例，防止旧EMA或后续模板掩盖换人。
+    def assess(self, feature, identity_id):
+        """输入特征和身份号，输出通过与否、原因及少量分数，供会话诊断使用。
+
+        计算仍使用原始精度；只在输出诊断时取四位小数，不输出向量或图片，也不放宽任何门槛。
         """
         identity = self.items[identity_id]
         anchor = identity.templates[0]
-        if self.score(feature, identity_id) < self.config.reid_tau_high or cosine(feature, anchor) < self.config.reid_tau_high:
-            return False
+        score, anchor_score = self.score(feature, identity_id), cosine(feature, anchor)
+        values = {"score": score, "anchor_score": anchor_score, "high": self.config.reid_tau_high,
+                  "color_min": self.config.reid_color_min, "margin": self.config.reid_margin}
+        reason = "ACCEPTED"
+        if score < self.config.reid_tau_high:
+            reason = "FUSED_SCORE_LOW"
+        elif anchor_score < self.config.reid_tau_high:
+            reason = "ANCHOR_SCORE_LOW"
         if len(feature) == 704 and len(anchor) == 704:
-            if self.config.reid_w_appear and cosine(feature[:576], anchor[:576]) < self.config.reid_tau_high:
-                return False
-            if self.config.reid_w_color and cosine(feature[576:], anchor[576:]) < self.config.reid_color_min:
-                return False
+            # 权重为0时对应分量是零向量，不计算其余弦，避免除以0。
+            if self.config.reid_w_appear:
+                values["appearance_score"] = cosine(feature[:576], anchor[:576])
+                if reason == "ACCEPTED" and values["appearance_score"] < self.config.reid_tau_high:
+                    reason = "APPEARANCE_SCORE_LOW"
+            if self.config.reid_w_color:
+                values["color_score"] = cosine(feature[576:], anchor[576:])
+                if reason == "ACCEPTED" and values["color_score"] < self.config.reid_color_min:
+                    reason = "COLOR_SCORE_LOW"
         if identity.distractors:
             nearest_other = max(cosine(feature, item) for item in identity.distractors)
-            if cosine(feature, anchor) - nearest_other < self.config.reid_margin:
-                return False
-        return True
+            values["nearest_other"] = nearest_other
+            values["other_margin"] = anchor_score - nearest_other
+            if reason == "ACCEPTED" and values["other_margin"] < self.config.reid_margin:
+                reason = "DISTRACTOR_TOO_CLOSE"
+        return {"accepted": reason == "ACCEPTED", "reason": reason,
+                **{key: round(value, 4) for key, value in values.items()}}
 
     def rank(self, feature, excluded=()):
         """保留完整身份库的第一/第二名来做 margin，在线身份也参与歧义比较。

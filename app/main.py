@@ -30,7 +30,7 @@ from .config import AppConfig, PROJECT_ROOT, load_config
 from .detector import Detector
 from .ipcamera import IpCamera
 from .pipeline import MAX_JPEG_BYTES, Pipeline, PipelineError
-from .schemas import ErrorResponse, FrameMessage, IpCameraPull, IpCameraStart, LockRequest, SelectRequest, RecordRequest
+from .schemas import ErrorResponse, FrameMessage, IpCameraPull, IpCameraStart, LockRequest, SelectRequest, RecordRequest, InteractionEvent
 from .session import SessionError
 from .photos import MAX_PHOTO_BYTES
 
@@ -212,7 +212,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             logger.info("服务结束 processed_frames=%s", pipeline.processed_frames)
             # 文件处理器留至进程退出时由 logging 关闭，保留尚在收尾的后台错误。
 
-    application = FastAPI(title="ViTrack", version="0.2.1", lifespan=lifespan)
+    application = FastAPI(title="ViTrack", version="0.2.2", lifespan=lifespan)
     application.state.ready = False
     application.state.pipeline = None
     application.state.settings = None
@@ -405,12 +405,19 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @application.exception_handler(SessionError)
     async def session_error(request: Request, error: SessionError):
         """把锁定/身份操作失败转换为中文业务错误，页面可直接显示。"""
+        logger.warning("操作拒绝 path=%r code=%s message=%s", request.url.path, error.code, error.message)
         return JSONResponse(error_body(error.code, error.message), 409)
 
     @application.post("/api/lock")
     async def lock_target(action: LockRequest):
         """当前会话内锁定指定轨迹；不会访问其他连接的相同轨迹号。"""
         return await application.state.pipeline.session_action(action.session_id, "lock", action.track_id, action.seq, action.action)
+
+    @application.post("/api/interaction-events")
+    async def interaction_event(event: InteractionEvent):
+        """接收受限的数字/枚举事件，关联当前会话；不读取设备，不接受媒体或任意文本。"""
+        return await application.state.pipeline.session_action(event.session_id, "record_interaction",
+                                                              event.model_dump(exclude={"session_id"}))
 
     @application.post("/api/select")
     async def select_target(action: SelectRequest):
@@ -475,6 +482,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         return JSONResponse({
             "ok": True, "version": application.version, "source": settings.source, "ipcam": ipcam_status(),
             "locking": {"mode": "single", "repeat_long_press": "unlock", "fresh_frame_verification": True},
+            "diagnostics": {"interaction_events": True, "identity_rejection_reasons": True},
             "device": settings.det_device, "device_name": pipeline.detector.device_name,
             "cuda_available": pipeline.detector.cuda_available, "model": settings.det_model.name,
             "fps": latest.fps if latest else 0.0,

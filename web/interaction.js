@@ -2,6 +2,8 @@
  * 两种视频模式共用的选中、长按、身份条和提示模块。
  * 输入客户端最新框/会话，输出锁定 HTTP 请求与 Canvas 样式；不采集或保存画面。
  */
+import { logger } from "./logger.js";
+
 export class TargetInteraction {
   constructor(canvas, readState, redraw) {
     this.canvas = canvas;
@@ -12,12 +14,17 @@ export class TargetInteraction {
     this.selected = null;
     this.press = null;
     this.busy = false;
+    // 手机长按还会产生contextmenu；这段时间只允许手势计时器执行操作。
+    this.contextMenuBlockedUntil = 0;
+    this.interactionDiagnostics = false;
     this.identitiesKey = "";
     this.recordAllowed = false;
     this.recording = false;
+    this.photoUploading = false;
+    this.photoIdentity = null;
     this.photoInput = document.getElementById("photo-file");
     document.getElementById("upload-photo").onclick = () => {
-      if (this.session) this.photoInput.click();
+      if (this.session && !this.photoUploading) this.photoInput.click();
       else this.toast("请先开始检测，再选择照片");
     };
     this.photoInput.onchange = () => void this.uploadPhoto();
@@ -25,14 +32,25 @@ export class TargetInteraction {
     canvas.tabIndex = 0;
     canvas.setAttribute("aria-label", "目标操作：短按选中，长按或按 L 锁定");
     canvas.addEventListener("pointerdown", event => this.down(event));
-    canvas.addEventListener("pointerup", () => this.cancel());
-    canvas.addEventListener("pointercancel", () => this.cancel());
-    canvas.addEventListener("lostpointercapture", () => this.cancel());
+    const finishPointer = event => {
+      // 有些安卓浏览器在抬手后才补发菜单，松手后仍短暂屏蔽这一次重复事件。
+      if (event.pointerType !== "mouse") this.contextMenuBlockedUntil = performance.now() + 1500;
+      this.cancel(true, event.type === "pointercancel" ? "pointer_cancel" : "released_early");
+    };
+    canvas.addEventListener("pointerup", finishPointer);
+    canvas.addEventListener("pointercancel", finishPointer);
+    canvas.addEventListener("lostpointercapture", () => this.cancel(true, "capture_lost"));
     canvas.addEventListener("pointermove", event => {
-      if (this.press && Math.hypot(event.clientX - this.press.clientX, event.clientY - this.press.clientY) > 12) this.cancel();
+      if (this.press && Math.hypot(event.clientX - this.press.clientX, event.clientY - this.press.clientY) > 12) this.cancel(true, "moved");
     });
     canvas.addEventListener("contextmenu", event => {
       event.preventDefault();
+      // 触摸菜单不等于鼠标右键；否则600ms长按和系统菜单会先锁定再取消。
+      if (this.press || event.pointerType === "touch" || event.sourceCapabilities?.firesTouchEvents ||
+          performance.now() < this.contextMenuBlockedUntil) {
+        this.sendInteraction("menu_suppressed", { reason: "duplicate_menu" });
+        return;
+      }
       const hit = this.hit(event);
       if (hit) { this.selected = hit.track_id; void this.lock(hit.track_id); }
     });
@@ -65,11 +83,19 @@ export class TargetInteraction {
     const box = this.hit(event);
     if (!box) { this.selected = null; this.redraw(); this.toast("请按住目标框内"); return; }
     this.selected = box.track_id;
+    this.contextMenuBlockedUntil = performance.now() + 1500;
     this.canvas.focus({ preventScroll: true });
     this.canvas.setPointerCapture(event.pointerId);
+    const action = box.state === "locked" ? "unlock" : "lock";
     this.press = { clientX: event.clientX, clientY: event.clientY, started: performance.now(),
       track: box.track_id, pointerId: event.pointerId };
-    this.timer = setTimeout(() => { this.cancel(); void this.lock(box.track_id); }, 600);
+    this.sendInteraction("press_start", { track_id: box.track_id,
+      pointer: ["touch", "mouse", "pen"].includes(event.pointerType) ? event.pointerType : "unknown" });
+    // 操作意图以按下时看到的状态为准，不在请求前重新翻转，重复lock请求也不会变成unlock。
+    this.timer = setTimeout(() => {
+      this.sendInteraction("press_commit", { track_id: box.track_id, reason: "hold_complete" });
+      this.cancel(); void this.lock(box.track_id, action);
+    }, 600);
     const animate = () => {
       this.redraw();
       if (this.press) this.animation = requestAnimationFrame(animate);
@@ -78,7 +104,9 @@ export class TargetInteraction {
   }
 
   /** 终止手势和动画；停止视频时同样调用，禁止迟到的长按锁定。 */
-  cancel(redraw = true) {
+  cancel(redraw = true, reason = null) {
+    if (this.press && reason) this.sendInteraction("press_cancel", { track_id: this.press.track, reason });
+    if (this.press) this.contextMenuBlockedUntil = performance.now() + 1500;
     clearTimeout(this.timer);
     cancelAnimationFrame(this.animation);
     this.press = null;
@@ -89,12 +117,33 @@ export class TargetInteraction {
   async request(path, options = {}) {
     const response = await fetch(path, { cache: "no-store", signal: AbortSignal.timeout(15000), ...options });
     const body = await response.json();
-    if (!response.ok || body.ok === false) throw new Error(body.message || "操作失败，请重试");
+    if (!response.ok || body.ok === false) {
+      const error = new Error(body.message || "操作失败，请重试");
+      error.code = body.code;
+      throw error;
+    }
     return body;
+  }
+
+  /** 输入有限枚举/编号，在本页记录，并按服务能力传给同一电脑；不发送触点坐标或媒体。 */
+  sendInteraction(event, details = {}) {
+    if (!this.session) return;
+    const record = { session_id: this.session, seq: this.seq, event, ...details };
+    // 本地文字中只包含枚举、帧号和轨迹号；控制会话的凭据不会写入日志。
+    logger.record("info", `交互 ${event} 帧${this.seq} 轨迹${details.track_id ?? "-"} ${details.reason || ""}`,
+      { source: "interaction", code: event.toUpperCase(), seq: this.seq });
+    if (!this.interactionDiagnostics) return;
+    void fetch("/api/interaction-events", { method: "POST", cache: "no-store",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(record),
+      signal: AbortSignal.timeout(4000) }).catch(() => {
+        // 诊断请求失败不能阻塞正常锁定，也不递归发送更多诊断请求。
+        logger.record("warn", "交互诊断未送达电脑", { source: "interaction", code: "TRACE_UNAVAILABLE" });
+      });
   }
 
   /** 从健康接口读取保存策略，默认禁用；页面操作不能绕过服务端禁止保存设置。 */
   configure(health) {
+    this.interactionDiagnostics = health.diagnostics?.interaction_events === true;
     this.recordAllowed = health.recording?.allowed === true;
     document.getElementById("record-hint").textContent = this.recordAllowed
       ? "录制会在电脑保存带框视频。只有同意保存时才使用；停止检测会同时结束录制。"
@@ -122,23 +171,29 @@ export class TargetInteraction {
   }
 
   /** 输入轨迹号，携带会话和已显示帧号锁定；异步结果不得改变新会话。 */
-  async lock(trackId) {
+  async lock(trackId, intendedAction = null) {
     if (!this.session || this.busy) return;
     const session = this.session;
     // 根据用户实际看到的状态表达操作意图，避免请求重试把“锁定”意外变成“取消”。
     const current = this.readState().boxes.find(box => box.track_id === trackId);
-    const action = current?.state === "locked" ? "unlock" : "lock";
+    const action = intendedAction || (current?.state === "locked" ? "unlock" : "lock");
     this.busy = true;
+    document.getElementById("lock-action-status").textContent = action === "unlock" ? "正在发送取消请求…" : "正在发送锁定请求…";
     try {
       const body = await this.request("/api/lock", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: session, track_id: trackId, seq: this.seq, action }) });
       if (this.session !== session) return;
       if (body.action === "unlocked") this.selected = null;
+      document.getElementById("lock-action-status").textContent = body.action === "unlocked"
+        ? "最近操作：已取消锁定。" : `最近操作：${body.identity_id} 锁定请求成功；后续画面仍需身份核验。`;
       this.toast(body.message || (body.action === "unlocked" ? "已取消锁定" : body.identity_id + " 已锁定"));
       this.redraw();
       navigator.vibrate?.(50);
     } catch (error) {
-      if (this.session === session) this.toast(error.message);
+      if (this.session === session) {
+        document.getElementById("lock-action-status").textContent = "锁定操作失败：" + error.message;
+        this.toast(error.message);
+      }
     } finally { this.busy = false; }
   }
 
@@ -146,7 +201,7 @@ export class TargetInteraction {
   accept(result) {
     if (this.session !== result.session_id) { this.reset(); this.session = result.session_id || null; }
     this.seq = result.seq;
-    document.getElementById("upload-photo").disabled = !this.session;
+    document.getElementById("upload-photo").disabled = !this.session || this.photoUploading;
     document.getElementById("record-video").disabled = !this.recordAllowed || !this.session;
     const identities = result.identities || [];
     const key = JSON.stringify(identities);
@@ -179,10 +234,19 @@ export class TargetInteraction {
         card.append(name, remove); list.append(card);
       }
     }
+    this.updatePhotoMatch(result);
+    const target = identities[0];
+    const matched = result.boxes?.some(box => box.state === "locked");
+    const confirming = result.boxes?.some(box => box.state === "candidate");
+    document.getElementById("target-status").textContent = !target ? "当前尚未登记跟踪目标。"
+      : matched ? `${target.id}：当前身份匹配通过。`
+      : confirming ? `${target.id}：正在连续确认身份，尚未完成锁定。`
+      : result.boxes?.some(box => box.cls === 0) ? `${target.id}：画面有人，但身份暂未确认；继续搜索，不代表你已离开。`
+      : `${target.id}：当前未检出人物，继续等待。`;
     for (const event of result.events || []) {
       if (event.name === "relocked") {
         this.toast(event.identity_id + " 重新匹配成功"); navigator.vibrate?.(50);
-      } else if (event.name === "lost") this.toast(event.identity_id + " 已离开画面");
+      } else if (event.name === "lost") this.toast(event.identity_id + " 身份匹配暂时中断，继续等待确认");
     }
   }
 
@@ -194,23 +258,75 @@ export class TargetInteraction {
       text: box.name.slice(0, 40) + (box.track_id == null ? "" : " #" + box.track_id) + " " + box.score.toFixed(2) };
   }
 
+  /** 输入登记阶段和中文消息，输出常驻状态；不依赖3.5秒后会消失的短暂提示。 */
+  setPhotoStatus(state, message) {
+    const status = document.getElementById("photo-status");
+    status.dataset.state = state;
+    status.textContent = message;
+  }
+
+  /** 输入本帧身份与框，单独说明照片是否匹配；迟到的旧帧不能否定刚收到的登记成功响应。 */
+  updatePhotoMatch(result) {
+    if (!this.photoIdentity) return;
+    const identity = (result.identities || []).find(item => item.id === this.photoIdentity.id);
+    const message = document.getElementById("photo-match-status");
+    if (!identity && !this.photoIdentity.seen) return;
+    if (!identity) {
+      this.photoIdentity = null;
+      const preview = document.getElementById("photo-preview");
+      preview.hidden = true; preview.removeAttribute("src");
+      this.setPhotoStatus("idle", "照片目标已删除或被其他锁定替换。");
+      message.textContent = "需要时可重新选择照片登记。";
+      return;
+    }
+    this.photoIdentity.seen = true;
+    message.textContent = (result.boxes || []).some(box => box.state === "locked" && box.identity_id === identity.id)
+      ? `${identity.id}：已在视频中匹配成功。`
+      : `${identity.id}：已登记，但视频中尚未确认同一人；不会据此显示实线绿框。`;
+  }
+
   /** 用户手动选照片后才传给同一电脑；FormData只存在内存，请求结束清理文件输入。 */
   async uploadPhoto() {
     const file = this.photoInput.files?.[0];
     const session = this.session;
-    if (!file || !session) return;
+    if (!file || !session || this.photoUploading) return;
     if (file.size > 6 * 1024 * 1024 - 2048) {
+      this.sendInteraction("photo_too_large", { reason: "size_limit" });
+      this.setPhotoStatus("error", "本次未登记：请选择小于 6 MiB 的 JPEG/PNG 照片。");
       this.toast("请选择小于 6 MiB 的 JPEG/PNG 照片"); this.photoInput.value = ""; return;
     }
+    this.photoUploading = true;
+    document.getElementById("upload-photo").disabled = true;
     const form = new FormData(); form.append("photo", file);
     try {
+      this.setPhotoStatus("uploading", "正在上传到这台电脑并提取人物特征，请稍候…");
       this.toast("正在提取照片中的人物…");
       const body = await this.request("/api/identities/photo?session_id=" + encodeURIComponent(session),
         { method: "POST", body: form });
-      if (session === this.session) this.toast(body.message);
+      if (session === this.session) {
+        this.photoIdentity = { id: body.identity_id, seen: false };
+        this.setPhotoStatus("registered", `${body.identity_id} 照片登记成功。${body.message}`);
+        document.getElementById("photo-match-status").textContent = "等待后续视频帧确认是否为同一人；无需手动长按。";
+        const preview = document.getElementById("photo-preview");
+        if (typeof body.thumb === "string" && body.thumb.startsWith("/api/identities/")) {
+          preview.src = body.thumb; preview.hidden = false;
+        }
+        this.toast(body.message);
+      }
     } catch (error) {
-      if (session === this.session) this.toast(error.message);
-    } finally { this.photoInput.value = ""; }
+      if (session === this.session) {
+        const hint = error.code === "NO_TARGET_IN_PHOTO" ? " 当前版本不支持脸部特写，请使用上半身或全身清楚的照片。" : "";
+        this.setPhotoStatus("error", "本次登记失败：" + error.message + hint);
+        this.toast(error.message);
+      }
+    } finally {
+      // 停止后即使旧上传请求才返回，也不能清空新会话的文件选择或修改其按钮。
+      if (session === this.session) {
+        this.photoUploading = false;
+        document.getElementById("upload-photo").disabled = false;
+        this.photoInput.value = "";
+      }
+    }
   }
 
   /** 画长按进度环；按屏幕位置映射画布，镜像前后触点均与手指保持一致。 */
@@ -247,7 +363,14 @@ export class TargetInteraction {
   reset() {
     this.session = null; this.selected = null; this.identitiesKey = "";
     this.recording = false;
-    this.cancel();
+    this.photoUploading = false; this.photoIdentity = null;
+    this.setPhotoStatus("idle", "尚未登记照片。开始检测后，点击顶部“上传照片”。");
+    document.getElementById("photo-match-status").textContent = "登记成功与匹配成功分别显示；只有确认匹配后才会出现实线绿框。";
+    const preview = document.getElementById("photo-preview");
+    preview.hidden = true; preview.removeAttribute("src");
+    document.getElementById("lock-action-status").textContent = "尚未发送手动锁定请求。";
+    document.getElementById("target-status").textContent = "当前尚未登记跟踪目标。";
+    this.cancel(true, "stopped");
     document.getElementById("identity-list").replaceChildren();
     document.getElementById("identity-empty").hidden = false;
     document.getElementById("upload-photo").disabled = true;

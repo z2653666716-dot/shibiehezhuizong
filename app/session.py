@@ -2,6 +2,7 @@
 身份库在轨迹丢失后保留，视频停止或断开后清空；不自动保存媒体。
 """
 from dataclasses import dataclass
+from collections import deque
 from secrets import token_urlsafe
 from time import monotonic
 from datetime import datetime, timezone
@@ -34,6 +35,8 @@ class Observation:
     candidate: str | None = None
     candidate_hits: int = 0
     bad_hits: int = 0
+    last_rejection: str | None = None
+    rejection_frame: int = -60
 
 
 class VideoSession:
@@ -56,6 +59,35 @@ class VideoSession:
         self.was_online = set()
         self.recorder = Recorder(config)
         self.event_path = PROJECT_ROOT / "outputs/events" / ("tracking_" + uuid4().hex + ".jsonl")
+        # trace_id是只供诊断关联的随机别名，绝不使用可控制会话的token作为日志编号。
+        self.trace_id = uuid4().hex[:12]
+        self._interaction_times = deque(maxlen=10)
+        self._visible_tracks = set()
+        self.diagnostic("session_started", reid_model=config.reid_model, high=config.reid_tau_high,
+                        confirm_frames=config.reid_confirm_frames, color_min=config.reid_color_min)
+
+    def diagnostic(self, event, **details):
+        """内部调用：将匿名会话号、帧号与受控标量写入已有轮换日志，不保存图片或特征。"""
+        logging.getLogger(__name__).info("TRACK_DIAG %s", json.dumps(
+            {"event": event, "session": self.trace_id, "seq": self.seq, **details},
+            ensure_ascii=False, allow_nan=False, separators=(",", ":")))
+
+    def record_interaction(self, details):
+        """接收接口已验证的枚举/数字，每会话每秒最多10条；不记录用户输入的任意文字。"""
+        now = monotonic()
+        if len(self._interaction_times) == 10 and now - self._interaction_times[0] < 1:
+            return {"ok": True, "recorded": False}
+        self._interaction_times.append(now)
+        self.diagnostic("client_gesture", client=details)
+        return {"ok": True, "recorded": True}
+
+    def log_rejection(self, track_id, assessment):
+        """同一轨迹/原因最多每60帧记一次，原因变化立即记录，防止逐帧刷满日志。"""
+        track = self.observations[track_id]
+        reason = assessment["reason"]
+        if reason != track.last_rejection or self.frame_count - track.rejection_frame >= 60:
+            self.diagnostic("candidate_rejected", track_id=track_id, check=assessment)
+            track.last_rejection, track.rejection_frame = reason, self.frame_count
 
     def update(self, detections, width, height):
         """输入当前检测与尺寸，输出原始跟踪框；空帧也推进失踪生命周期。"""
@@ -100,15 +132,26 @@ class VideoSession:
                 track = self.observations[key]
                 track.feature = self.extractor.smooth(track.feature, feature)
         visible = {box.track_id for box in self.boxes if box.track_id is not None}
+        if visible != self._visible_tracks:
+            self.diagnostic("visible_tracks_changed", visible=sorted(visible),
+                            appeared=sorted(visible - self._visible_tracks),
+                            missing=sorted(self._visible_tracks - visible), detected=len(self.boxes))
+            self._visible_tracks = visible
         claimed = set()
         # 当前可见绑定有优先权，不允许另一条相似轨迹占据同一个身份。
         for key in sorted(visible):
             track = self.observations[key]
             if track.identity_id not in self.gallery.items or track.identity_id in claimed:
                 track.identity_id = None
-            if track.identity_id and (key not in fresh or not self.gallery.supports(fresh[key], track.identity_id)):
+            check = (self.gallery.assess(fresh[key], track.identity_id) if key in fresh else
+                     {"accepted": False, "reason": "NO_FRESH_FEATURE"}) if track.identity_id else None
+            if track.identity_id and not check["accepted"]:
                 # ByteTrack在交叉/遮挡时可能沿用别人的旧号；当前外观不足即回白，而不是等低于0.45五次。
                 self.events.append({'type': 'event', 'name': 'unbound', 'identity_id': track.identity_id})
+                self.diagnostic("identity_unbound", track_id=key, identity_id=track.identity_id,
+                                reason="fresh_identity_check_failed", check=check,
+                                ema_score=round(self.gallery.score(track.feature, track.identity_id), 4)
+                                if track.feature is not None else None)
                 track.identity_id = None
                 track.candidate, track.candidate_hits = None, 0
                 track.feature = fresh.get(key)
@@ -121,16 +164,27 @@ class VideoSession:
             if box.cls != 0 or track is None or track.identity_id or track.hits < 3 or box.track_id not in fresh:
                 continue
             identity_id, best, second = self.gallery.rank(track.feature, claimed)
+            raw_check = self.gallery.assess(fresh[box.track_id], identity_id) if identity_id else None
+            ema_check = self.gallery.assess(track.feature, identity_id) if identity_id else None
             if (identity_id and best >= self.config.reid_tau_high and best - second >= self.config.reid_margin
-                    and self.gallery.supports(fresh[box.track_id], identity_id)
-                    and self.gallery.supports(track.feature, identity_id)):
+                    and raw_check["accepted"] and ema_check["accepted"]):
                 contenders.setdefault(identity_id, []).append((best, box.track_id))
+            elif identity_id:
+                check = raw_check if not raw_check["accepted"] else ema_check
+                if check["accepted"]:
+                    check = {"accepted": False, "reason": "IDENTITY_MARGIN_LOW", "best": round(best, 4),
+                             "second": round(second, 4), "margin": self.config.reid_margin}
+                self.log_rejection(box.track_id, check)
         winners = {}
         for identity_id, candidates in contenders.items():
             candidates.sort(reverse=True)
             # 身份之间要有差距，竞争同一身份的两个可见人物之间同样要有差距。
             if len(candidates) == 1 or candidates[0][0] - candidates[1][0] >= self.config.reid_margin:
                 winners[candidates[0][1]] = identity_id
+            else:
+                for score, key in candidates:
+                    self.log_rejection(key, {"accepted": False, "reason": "COMPETING_TRACKS",
+                                            "best": round(score, 4), "margin": self.config.reid_margin})
         output = []
         for box in self.boxes:
             track = self.observations.get(box.track_id)
@@ -148,6 +202,9 @@ class VideoSession:
                     if identity_id and winners.get(box.track_id) == identity_id:
                         track.candidate_hits = track.candidate_hits + 1 if track.candidate == identity_id else 1
                         track.candidate = identity_id
+                        if track.candidate_hits == 1:
+                            self.diagnostic("confirmation_started", track_id=box.track_id, identity_id=identity_id,
+                                            required=self.config.reid_confirm_frames)
                         state = 'candidate'
                         if track.candidate_hits >= self.config.reid_confirm_frames:
                             # 新号接管身份后，旧失踪轨迹不得复活成重复绿框。
@@ -158,6 +215,8 @@ class VideoSession:
                             claimed.add(identity_id)
                             # 自动重匹配不扩充模板，避免一次误认逐渐污染登记的身份。
                             self.events.append({'type': 'event', 'name': 'relocked', 'identity_id': identity_id})
+                            self.diagnostic("identity_confirmed", track_id=box.track_id, identity_id=identity_id,
+                                            frames=track.candidate_hits)
                             track.candidate, track.candidate_hits = None, 0
                             state = 'locked'
                     else:
@@ -214,8 +273,10 @@ class VideoSession:
             # 磁盘满等问题不应让内存中的检测和匹配一起停掉。
             logging.getLogger(__name__).exception("事件记录失败")
 
-    def clear_lock(self):
+    def clear_lock(self, reason="cancel"):
         """解除当前目标及其搜索任务，丢弃旧身份/候选；取消后旧目标不会自己重新变绿。"""
+        if self.gallery.items:
+            self.diagnostic("identity_cleared", reason=reason, identities=list(self.gallery.items))
         self.gallery.items.clear()
         for track in self.observations.values():
             track.identity_id = None
@@ -231,35 +292,46 @@ class VideoSession:
         replacement = Gallery(self.config)
         replacement.next_id = self.gallery.next_id  # 编号不复用，避免旧卡片误指向新身份。
         identity = replacement.register(feature, **details)
-        self.clear_lock()
+        self.clear_lock(reason="replace")
         self.gallery = replacement
+        self.diagnostic("identity_registered", identity_id=identity.id, source=identity.source)
         return identity
 
     def lock(self, track_id, seq, action='toggle'):
         """输入轨迹号、帧号和lock/unlock/toggle，输出明确的操作结果；同时只保留一个目标。"""
+        self.diagnostic("lock_requested", track_id=track_id, client_seq=seq, action=action,
+                        frame_age_ms=round((monotonic() - self.updated_at) * 1000, 2))
+        def reject(code, message):
+            """所有业务拒绝同时留下受控错误码，再由HTTP接口返回中文提示。"""
+            self.diagnostic("lock_rejected", track_id=track_id, code=code, action=action)
+            raise SessionError(code, message)
+
         box = next((item for item in self.boxes if item.track_id == track_id), None)
         if box is None or monotonic() - self.updated_at > 3 or seq > self.seq or self.seq - seq > 30:
-            raise SessionError('TRACK_GONE', '目标已离开画面或画面已过期，请重新选择')
+            reject('TRACK_GONE', '目标已离开画面或画面已过期，请重新选择')
         if box.cls != 0:
-            raise SessionError('UNSUPPORTED_TARGET', '身份锁定目前支持人物，请选择 person 框')
+            reject('UNSUPPORTED_TARGET', '身份锁定目前支持人物，请选择 person 框')
         track = self.observations[track_id]
         if action not in {'lock', 'unlock', 'toggle'}:
-            raise SessionError('BAD_REQUEST', '锁定操作类型不正确')
+            reject('BAD_REQUEST', '锁定操作类型不正确')
         if track.identity_id in self.gallery.items:
             if action in {'unlock', 'toggle'}:
                 self.clear_lock()
+                self.diagnostic("lock_result", track_id=track_id, action="unlocked")
                 return {'ok': True, 'action': 'unlocked', 'identity_id': None, 'message': '已取消锁定'}
             # 明确lock请求的重复发送不取消，只有用户再次长按绿框才发送unlock。
+            self.diagnostic("lock_result", track_id=track_id, action="locked", repeated=True)
             return {'ok': True, 'action': 'locked', 'identity_id': track.identity_id, 'message': '目标已锁定'}
         if action == 'unlock':
+            self.diagnostic("lock_result", track_id=track_id, action="unlocked", no_change=True)
             return {'ok': True, 'action': 'unlocked', 'identity_id': None, 'message': '该目标当前未锁定'}
         # 切换目标时旧EMA会被清除，但稳定命中次数仍有效；本次注册会重新提取当前裁剪。
         if track.hits < 5 or self.extractor is None:
-            raise SessionError('REID_NOT_WARM', '请让目标在画面中停留片刻后再按住；过小的人物框可能无法提取特征')
+            reject('REID_NOT_WARM', '请让目标在画面中停留片刻后再按住；过小的人物框可能无法提取特征')
         if track.identity_id not in self.gallery.items:
             crop = crop_target(self.frame, box.xyxy)
             if crop is None:
-                raise SessionError('REID_NOT_WARM', '目标太小，请靠近一些后重试')
+                reject('REID_NOT_WARM', '目标太小，请靠近一些后重试')
             # 同一帧其他人的特征作为登记反例。只取明显不相交的框，避免把同一人的重复框当反例。
             other_crops = []
             for other in self.boxes:
@@ -282,6 +354,7 @@ class VideoSession:
             track.feature = feature.copy()
             track.bad_hits = 0
             self.pending_events.append({'type': 'event', 'name': 'lock_created', 'identity_id': identity.id})
+        self.diagnostic("lock_result", track_id=track_id, action="locked", identity_id=track.identity_id)
         return {'ok': True, 'action': 'locked', 'identity_id': track.identity_id,
                 'message': f'{track.identity_id} 已锁定，已解除其他目标'}
 
@@ -324,6 +397,7 @@ class VideoSession:
 
     def reset(self):
         """视频停止后清除图像和身份内存；轨迹号仍由 Tracker 保证不复用。"""
+        self.diagnostic("session_stopped", identities=len(self.gallery.items), tracks=len(self.observations))
         self.recorder.stop()
         self.tracker.reset()
         self.observations.clear()
@@ -333,6 +407,8 @@ class VideoSession:
         self.events.clear()
         self.pending_events.clear()
         self.was_online.clear()
+        self._visible_tracks.clear()
+        self._interaction_times.clear()
 
     def snapshot(self):
         """仅输出跟踪数值，不含画面或向量。"""
