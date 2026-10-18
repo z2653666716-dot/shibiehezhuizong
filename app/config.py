@@ -49,10 +49,11 @@ class AppConfig(BaseModel):
     # 外观匹配、身份数量、传输和可选录制参数；默认禁止媒体保存。
     reid_model: Literal["mobilenet_v3_small", "color_histogram", "osnet_x0_25"] = "mobilenet_v3_small"
     reid_ema: float = Field(default=0.9, ge=0, lt=1)
-    reid_tau_high: float = Field(default=0.80, ge=0, le=1)
+    reid_tau_high: float = Field(default=0.90, ge=0, le=1)
     reid_tau_low: float = Field(default=0.45, ge=0, le=1)
     reid_margin: float = Field(default=0.05, ge=0, le=1)
-    reid_confirm_frames: int = Field(default=3, ge=1)
+    reid_confirm_frames: int = Field(default=6, ge=1)
+    reid_color_min: float = Field(default=0.60, ge=0, le=1)
     reid_max_templates: int = Field(default=5, ge=1)
     reid_w_appear: float = Field(default=0.85, ge=0, le=1)
     reid_w_color: float = Field(default=0.15, ge=0, le=1)

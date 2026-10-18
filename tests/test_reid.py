@@ -65,7 +65,7 @@ def test_expired_track_relocks_without_claiming_different_color():
     for _ in range(8): assert step(blue, [person(200)])[0].state == "none"
     for _ in range(40): step(red, [])
     states = []
-    for _ in range(8): states.append(step(red, [person(200)])[0].state)
+    for _ in range(12): states.append(step(red, [person(200)])[0].state)
     assert "candidate" in states and states[-1] == "locked"
     assert session.boxes[0].identity_id == "ID-01" and session.boxes[0].track_id != old_track
     assert any(item["name"] == "relocked" for item in session.events) or states[-1] == "locked"
@@ -119,7 +119,7 @@ def test_best_visible_candidate_wins_independent_of_detection_order():
     session.gallery.register([1, 0], source="photo")
     frame = np.zeros((160, 320, 3), np.uint8)
     frame[:, 160:] = 240
-    for seq in range(1, 8):
+    for seq in range(1, 10):
         session.update([person(), person(200)], 320, 160)
         boxes = session.process(frame, seq)
     assert boxes[0].state == "none" and boxes[1].state == "locked"

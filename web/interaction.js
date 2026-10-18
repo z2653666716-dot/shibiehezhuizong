@@ -42,7 +42,7 @@ export class TargetInteraction {
       }
     });
     document.getElementById("identity-hint").textContent =
-      "短按选中黄框，按住 0.6 秒锁定绿框；电脑也可右键或选中后按 L。身份仅在本次视频会话保留。";
+      "短按选中；按住0.6秒锁定，再按住绿框取消。锁定其他人会解除原目标，照片登记也会替换当前目标。";
   }
 
   /** 输入触点，按画布屏幕大小归一化，再还原镜像；只命中实际框。 */
@@ -125,12 +125,17 @@ export class TargetInteraction {
   async lock(trackId) {
     if (!this.session || this.busy) return;
     const session = this.session;
+    // 根据用户实际看到的状态表达操作意图，避免请求重试把“锁定”意外变成“取消”。
+    const current = this.readState().boxes.find(box => box.track_id === trackId);
+    const action = current?.state === "locked" ? "unlock" : "lock";
     this.busy = true;
     try {
       const body = await this.request("/api/lock", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: session, track_id: trackId, seq: this.seq }) });
+        body: JSON.stringify({ session_id: session, track_id: trackId, seq: this.seq, action }) });
       if (this.session !== session) return;
-      this.toast(body.identity_id + " 已锁定");
+      if (body.action === "unlocked") this.selected = null;
+      this.toast(body.message || (body.action === "unlocked" ? "已取消锁定" : body.identity_id + " 已锁定"));
+      this.redraw();
       navigator.vibrate?.(50);
     } catch (error) {
       if (this.session === session) this.toast(error.message);

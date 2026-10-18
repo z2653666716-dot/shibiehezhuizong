@@ -164,6 +164,8 @@ class LockRequest(DataModel):
     session_id: str = Field(min_length=20, max_length=100)
     track_id: int = Field(ge=0, strict=True)
     seq: int = Field(ge=0, strict=True)
+    # 页面明确发送lock/unlock使重试幂等；旧客户端省略时保留长按切换语义。
+    action: Literal["lock", "unlock", "toggle"] = "toggle"
 
 
 class SelectRequest(DataModel):

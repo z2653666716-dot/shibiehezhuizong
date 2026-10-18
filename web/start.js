@@ -34,6 +34,12 @@ export async function initializePage() {
     if (!response.ok || health.ok !== true || !["ws", "ipcam"].includes(health.source)) {
       throw new Error("服务未就绪或未返回可用的视频来源");
     }
+    if (health.locking?.mode !== "single") {
+      // 网页文件立即更新，而旧Python进程不会自动重载；不要把新按钮接到不兼容的旧接口。
+      const error = new Error("检测服务仍是旧版本，请在电脑重启服务后刷新手机页面。");
+      error.code = "SERVICE_UPDATE_REQUIRED";
+      throw error;
+    }
     document.getElementById("health-status").textContent = "服务就绪";
     document.getElementById("device-name").textContent = health.device_name || "未知设备";
     document.getElementById("model-name").textContent = health.model || "未知模型";
@@ -62,7 +68,8 @@ export async function initializePage() {
     return client;
   } catch (error) {
     document.getElementById("health-status").textContent = "初始化失败";
-    document.getElementById("page-status").textContent = "无法连接电脑。界面可离线打开，检测需要连接电脑服务后刷新。";
+    document.getElementById("page-status").textContent = error.code === "SERVICE_UPDATE_REQUIRED"
+      ? error.message : "无法连接电脑。界面可离线打开，检测需要连接电脑服务后刷新。";
     document.getElementById("start-detection").disabled = true;
     document.getElementById("stop-detection").disabled = true;
     logger.captureError("页面初始化失败", error, { source: "startup", code: "PAGE_INIT_FAILED" });

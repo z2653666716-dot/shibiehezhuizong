@@ -212,7 +212,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             logger.info("服务结束 processed_frames=%s", pipeline.processed_frames)
             # 文件处理器留至进程退出时由 logging 关闭，保留尚在收尾的后台错误。
 
-    application = FastAPI(title="ViTrack", version="0.2.0", lifespan=lifespan)
+    application = FastAPI(title="ViTrack", version="0.2.1", lifespan=lifespan)
     application.state.ready = False
     application.state.pipeline = None
     application.state.settings = None
@@ -410,7 +410,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @application.post("/api/lock")
     async def lock_target(action: LockRequest):
         """当前会话内锁定指定轨迹；不会访问其他连接的相同轨迹号。"""
-        return await application.state.pipeline.session_action(action.session_id, "lock", action.track_id, action.seq)
+        return await application.state.pipeline.session_action(action.session_id, "lock", action.track_id, action.seq, action.action)
 
     @application.post("/api/select")
     async def select_target(action: SelectRequest):
@@ -473,7 +473,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         pipeline = application.state.pipeline
         latest = pipeline.latest_result
         return JSONResponse({
-            "ok": True, "source": settings.source, "ipcam": ipcam_status(),
+            "ok": True, "version": application.version, "source": settings.source, "ipcam": ipcam_status(),
+            "locking": {"mode": "single", "repeat_long_press": "unlock", "fresh_frame_verification": True},
             "device": settings.det_device, "device_name": pipeline.detector.device_name,
             "cuda_available": pipeline.detector.cuda_available, "model": settings.det_model.name,
             "fps": latest.fps if latest else 0.0,

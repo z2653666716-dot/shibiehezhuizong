@@ -120,7 +120,7 @@ class Pipeline:
                 if not ok:
                     raise SessionError("BAD_PHOTO", "缩略图处理失败，请换一张照片")
                 try:
-                    identity = session.gallery.register(feature, name="照片注册", source="photo", thumbnail=encoded.tobytes())
+                    identity = session.register_identity(feature, name="照片注册", source="photo", thumbnail=encoded.tobytes())
                 except ValueError as error:
                     raise SessionError("IDENTITY_LIMIT", str(error)) from error
                 return {"ok": True, "identity_id": identity.id,

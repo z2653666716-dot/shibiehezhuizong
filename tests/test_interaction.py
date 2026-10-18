@@ -35,6 +35,11 @@ def test_pointer_lock_and_cancel(viewer):
       ui.overlay.dispatchEvent(new PointerEvent('pointercancel',testPoint));
     })()""")
     assert session.evaluate("ui.interaction.press===null")
+    # 再次完整长按绿框应取消，而不是重复登记或显示“null已锁定”。
+    session.evaluate("ui.overlay.dispatchEvent(new PointerEvent('pointerdown',testPoint))")
+    session.wait("ui.boxes.every(b=>b.state==='none') && document.querySelectorAll('.identity-card').length===0")
+    assert session.evaluate("document.getElementById('toast').textContent") == "已取消锁定"
+    assert session.evaluate("ui.interaction.selected===null")
     session.evaluate("document.getElementById('stop-detection').click()")
     session.wait("ui.state==='idle'")
     assert session.evaluate("ui.interaction.session===null && ui.interaction.selected===null")

@@ -1,5 +1,5 @@
 /* ViTrack离线界面缓存：只保存源码与图标；API、缩略图、帧和视频永不缓存。 */
-const CACHE = "vitrack-shell-v1";
+const CACHE = "vitrack-shell-v2";
 const SHELL = ["/", "/static/style.css", "/static/start.js", "/static/logger.js", "/static/camera.js",
   "/static/app.js", "/static/ipcam.js", "/static/interaction.js", "/static/box_smoother.js",
   "/static/manifest.webmanifest", "/static/icons/icon-192.png", "/static/icons/icon-512.png"];

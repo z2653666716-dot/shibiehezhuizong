@@ -80,7 +80,7 @@ class VideoSession:
 
     def process(self, frame, seq):
         """输入 BGR 帧与序号，批量提取特征、匹配、反向校验，输出身份化的框。
-        未绑定轨迹逐帧提特征，绑定后每三帧刷新，整个批次只前向一次神经网络。
+        人物逐帧批量提取特征；绿框也必须有本帧证据，不能只沿用旧轨迹号或旧EMA。
         """
         self.frame, self.seq = frame, seq
         self.events, self.pending_events = self.pending_events, []
@@ -89,11 +89,10 @@ class VideoSession:
             if box.cls != 0 or box.track_id is None:
                 continue  # 行人外观编码器不能用来声称识别任意物体身份。
             track = self.observations[box.track_id]
-            if track.identity_id is None or self.frame_count % 3 == 0 or track.feature is None:
-                crop = crop_target(frame, box.xyxy)
-                if crop is not None:
-                    crops.append(crop)
-                    keys.append(box.track_id)
+            crop = crop_target(frame, box.xyxy)
+            if crop is not None:
+                crops.append(crop)
+                keys.append(box.track_id)
         fresh = {}
         if self.extractor is not None:
             fresh = dict(zip(keys, self.extractor.extract(crops)))
@@ -107,6 +106,12 @@ class VideoSession:
             track = self.observations[key]
             if track.identity_id not in self.gallery.items or track.identity_id in claimed:
                 track.identity_id = None
+            if track.identity_id and (key not in fresh or not self.gallery.supports(fresh[key], track.identity_id)):
+                # ByteTrack在交叉/遮挡时可能沿用别人的旧号；当前外观不足即回白，而不是等低于0.45五次。
+                self.events.append({'type': 'event', 'name': 'unbound', 'identity_id': track.identity_id})
+                track.identity_id = None
+                track.candidate, track.candidate_hits = None, 0
+                track.feature = fresh.get(key)
             if track.identity_id:
                 claimed.add(track.identity_id)
         # 多个人都与同一身份相似时，先全局比较再分配，不能让检测数组中排在前面的人抢先变绿。
@@ -116,7 +121,9 @@ class VideoSession:
             if box.cls != 0 or track is None or track.identity_id or track.hits < 3 or box.track_id not in fresh:
                 continue
             identity_id, best, second = self.gallery.rank(track.feature, claimed)
-            if identity_id and best >= self.config.reid_tau_high and best - second >= self.config.reid_margin:
+            if (identity_id and best >= self.config.reid_tau_high and best - second >= self.config.reid_margin
+                    and self.gallery.supports(fresh[box.track_id], identity_id)
+                    and self.gallery.supports(track.feature, identity_id)):
                 contenders.setdefault(identity_id, []).append((best, box.track_id))
         winners = {}
         for identity_id, candidates in contenders.items():
@@ -134,18 +141,7 @@ class VideoSession:
             if box.cls == 0 and track is not None and track.feature is not None:
                 if track.identity_id:
                     similarity = self.gallery.score(track.feature, track.identity_id)
-                    # 新观测反向检查，避免旧 EMA 掩盖换人；五次新观测过低才解绑。
-                    if box.track_id in fresh:
-                        raw_score = self.gallery.score(fresh[box.track_id], track.identity_id)
-                        track.bad_hits = track.bad_hits + 1 if raw_score < self.config.reid_tau_low else 0
-                    if track.bad_hits >= 5:
-                        claimed.discard(track.identity_id)
-                        self.events.append({'type': 'event', 'name': 'unbound', 'identity_id': track.identity_id})
-                        track.identity_id = None
-                        track.feature = fresh.get(box.track_id, track.feature)
-                        track.bad_hits = 0
-                    else:
-                        state = 'locked'
+                    state = 'locked'  # 上方已用本帧外观逐帧校验，通过后才允许继续绿框。
                 if track.identity_id is None and track.hits >= 3 and box.track_id in fresh:
                     identity_id, best, second = self.gallery.rank(track.feature, claimed)
                     similarity = best if identity_id else None
@@ -160,7 +156,7 @@ class VideoSession:
                                     other.identity_id = None
                             track.identity_id = identity_id
                             claimed.add(identity_id)
-                            self.gallery.append(identity_id, track.feature)
+                            # 自动重匹配不扩充模板，避免一次误认逐渐污染登记的身份。
                             self.events.append({'type': 'event', 'name': 'relocked', 'identity_id': identity_id})
                             track.candidate, track.candidate_hits = None, 0
                             state = 'locked'
@@ -218,29 +214,76 @@ class VideoSession:
             # 磁盘满等问题不应让内存中的检测和匹配一起停掉。
             logging.getLogger(__name__).exception("事件记录失败")
 
-    def lock(self, track_id, seq):
-        """输入轨迹号和已显示帧，稳定且可提特征时注册身份，返回身份编号。"""
+    def clear_lock(self):
+        """解除当前目标及其搜索任务，丢弃旧身份/候选；取消后旧目标不会自己重新变绿。"""
+        self.gallery.items.clear()
+        for track in self.observations.values():
+            track.identity_id = None
+            track.candidate, track.candidate_hits = None, 0
+            track.bad_hits = 0
+            track.feature = None
+        self.boxes = [box.model_copy(update={'state': 'none', 'identity_id': None, 'sim': None}) for box in self.boxes]
+        self.pending_events.clear()
+        self.was_online.clear()
+
+    def register_identity(self, feature, **details):
+        """先成功构造新身份，再原子替换旧目标；照片注册和手动锁定共用单目标规则。"""
+        replacement = Gallery(self.config)
+        replacement.next_id = self.gallery.next_id  # 编号不复用，避免旧卡片误指向新身份。
+        identity = replacement.register(feature, **details)
+        self.clear_lock()
+        self.gallery = replacement
+        return identity
+
+    def lock(self, track_id, seq, action='toggle'):
+        """输入轨迹号、帧号和lock/unlock/toggle，输出明确的操作结果；同时只保留一个目标。"""
         box = next((item for item in self.boxes if item.track_id == track_id), None)
         if box is None or monotonic() - self.updated_at > 3 or seq > self.seq or self.seq - seq > 30:
             raise SessionError('TRACK_GONE', '目标已离开画面或画面已过期，请重新选择')
         if box.cls != 0:
             raise SessionError('UNSUPPORTED_TARGET', '身份锁定目前支持人物，请选择 person 框')
         track = self.observations[track_id]
-        if track.hits < 5 or track.feature is None:
+        if action not in {'lock', 'unlock', 'toggle'}:
+            raise SessionError('BAD_REQUEST', '锁定操作类型不正确')
+        if track.identity_id in self.gallery.items:
+            if action in {'unlock', 'toggle'}:
+                self.clear_lock()
+                return {'ok': True, 'action': 'unlocked', 'identity_id': None, 'message': '已取消锁定'}
+            # 明确lock请求的重复发送不取消，只有用户再次长按绿框才发送unlock。
+            return {'ok': True, 'action': 'locked', 'identity_id': track.identity_id, 'message': '目标已锁定'}
+        if action == 'unlock':
+            return {'ok': True, 'action': 'unlocked', 'identity_id': None, 'message': '该目标当前未锁定'}
+        # 切换目标时旧EMA会被清除，但稳定命中次数仍有效；本次注册会重新提取当前裁剪。
+        if track.hits < 5 or self.extractor is None:
             raise SessionError('REID_NOT_WARM', '请让目标在画面中停留片刻后再按住；过小的人物框可能无法提取特征')
         if track.identity_id not in self.gallery.items:
             crop = crop_target(self.frame, box.xyxy)
             if crop is None:
                 raise SessionError('REID_NOT_WARM', '目标太小，请靠近一些后重试')
-            feature = self.extractor.extract([crop], flip=True)[0]
+            # 同一帧其他人的特征作为登记反例。只取明显不相交的框，避免把同一人的重复框当反例。
+            other_crops = []
+            for other in self.boxes:
+                if other.cls != 0 or other.track_id == track_id:
+                    continue
+                left, top = max(box.xyxy[0], other.xyxy[0]), max(box.xyxy[1], other.xyxy[1])
+                right, bottom = min(box.xyxy[2], other.xyxy[2]), min(box.xyxy[3], other.xyxy[3])
+                if right > left and bottom > top:
+                    continue
+                other_crop = crop_target(self.frame, other.xyxy)
+                if other_crop is not None:
+                    other_crops.append(other_crop)
+            features = self.extractor.extract([crop, *other_crops], flip=True)
+            feature = features[0]
             try:
-                identity = self.gallery.register(feature)
+                identity = self.register_identity(feature, distractors=features[1:])
             except ValueError as error:
                 raise SessionError('IDENTITY_LIMIT', str(error)) from error
             track.identity_id = identity.id
+            track.feature = feature.copy()
             track.bad_hits = 0
             self.pending_events.append({'type': 'event', 'name': 'lock_created', 'identity_id': identity.id})
-        return {'ok': True, 'identity_id': track.identity_id}
+        return {'ok': True, 'action': 'locked', 'identity_id': track.identity_id,
+                'message': f'{track.identity_id} 已锁定，已解除其他目标'}
 
     def select(self, x, y, seq):
         """在触点命中框里挑面积最小者；空白处不锁定远处人物。"""
