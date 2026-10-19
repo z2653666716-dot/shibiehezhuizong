@@ -15,7 +15,7 @@ import time
 import httpx
 import pytest
 
-from scripts.verify_stream import BrowserSession, DEFAULT_BROWSER
+from scripts.verify_stream import BrowserSession, DEFAULT_BROWSER, sample_source
 from tests.test_ipcamera import sample_stream
 
 
@@ -37,14 +37,15 @@ window.WebSocket=class extends NativeSocket{
 
 
 @pytest.fixture
-def viewer(sample_stream, tmp_path):
-    """启动自己的样例检测服务和无界面浏览器，返回 CDP 会话；退出时关闭本次进程树。"""
+def viewer(sample_stream, tmp_path, request):
+    """启动隔离服务/浏览器；默认IP样例，间接参数ws改用公开图合成轨道，始终拒绝设备。"""
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
     base_url = "http://127.0.0.1:" + str(port)
     environment = os.environ.copy()
-    environment.update(SOURCE="ipcam", IPCAM_URL=sample_stream["url"] + "/video")
+    source = getattr(request, "param", "ipcam")
+    environment.update(SOURCE=source, IPCAM_URL=sample_stream["url"] + "/video")
     server = browser = session = None
     with (tmp_path / "service.txt").open("w", encoding="utf-8") as output:
         try:
@@ -92,14 +93,20 @@ def viewer(sample_stream, tmp_path):
                 session.call("Browser.setPermission", {
                     "permission": {"name": permission}, "setting": "denied", "origin": base_url,
                 })
-            session.call("Page.addScriptToEvaluateOnNewDocument", {"source": GUARD})
+            # 浏览器推帧测试只使用公开图生成的canvas轨道；原生设备权限仍为denied。
+            guard = GUARD if source == "ipcam" else "window.deviceCalls=0;" + sample_source(PROJECT_ROOT / "data/samples/test.jpg")
+            session.call("Page.addScriptToEvaluateOnNewDocument", {"source": guard})
             session.call("Page.navigate", {"url": base_url + "/pc"})
-            session.wait('document.getElementById("start-detection")?.textContent==="开始读取"')
+            start_label = "开始读取" if source == "ipcam" else "开始检测"
+            ready = 'document.getElementById("start-detection")?.textContent===' + json.dumps(start_label)
+            if source == "ws":
+                ready += ' && !document.getElementById("start-detection").disabled'
+            session.wait(ready)
             session.evaluate('(async()=>{window.ui=(await import("/static/start.js")).client})()')
             yield session, base_url
         finally:
             # 即使页面断言失败，也只停止本次样例读取；不使用任何真实设备地址。
-            if server is not None and server.poll() is None:
+            if source == "ipcam" and server is not None and server.poll() is None:
                 try:
                     httpx.post(base_url + "/api/ipcam/stop", timeout=8, trust_env=False)
                 except httpx.HTTPError:

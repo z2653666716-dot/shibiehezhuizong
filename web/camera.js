@@ -103,6 +103,7 @@ export class Camera extends EventTarget {
     this.video = video;
     this.overlay = overlay;
     this.stream = null;
+    this.pausedTracks = [];
     this.controller = null;
     this.requestId = 0;
     this.state = "idle";
@@ -181,6 +182,23 @@ export class Camera extends EventTarget {
     }
   }
 
+  /** 相册临时遮住网页时禁用原视频轨道；不打开新设备，不保存画面，只记原来启用的轨道。 */
+  pauseCapture() {
+    if (!this.stream || this.pausedTracks.length) return;
+    this.pausedTracks = this.stream.getVideoTracks().filter(track => track.enabled && track.readyState === "live");
+    for (const track of this.pausedTracks) track.enabled = false;
+  }
+
+  /** 返回前台后恢复本次仍存活的轨道；已经停止/替换的设备不会被重新开启。 */
+  resumeCapture() {
+    if (document.hidden) return;
+    const current = this.stream?.getVideoTracks() || [];
+    for (const track of this.pausedTracks) {
+      if (current.includes(track) && track.readyState === "live") track.enabled = true;
+    }
+    this.pausedTracks = [];
+  }
+
   /** 无输入；让未完成请求失效、取消画面等待、关闭设备，并清掉旧检测框。 */
   stop() {
     const wasActive = this.state !== "idle";
@@ -190,6 +208,7 @@ export class Camera extends EventTarget {
     this.controller = null;
     const stream = this.stream;
     this.stream = null;
+    this.pausedTracks = [];
     closeStream(stream);
     this.video.pause();
     this.video.srcObject = null;

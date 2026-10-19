@@ -100,6 +100,9 @@ export class DetectionClient {
     this.boxes = [];
     this.smoother = new BoxSmoother();
     this.started = false;
+    this.photoPaused = false;
+    this.photoPauseDeadline = 0;
+    this.photoPauseTimer = null;
     this.captureCanvas = document.createElement("canvas");
     this.captureContext = this.captureCanvas.getContext("2d");
     this.overlayContext = this.camera.overlay.getContext("2d");
@@ -141,14 +144,7 @@ export class DetectionClient {
     });
     this.camera.addEventListener("mirrorchange", () => { this.interaction.cancel(false); this.drawBoxes(); });
     window.addEventListener("resize", () => this.drawBoxes());
-    document.addEventListener("visibilitychange", () => {
-      if (document.hidden) {
-        if (this.camera.state === "running") this.stop("页面在后台，已暂停检测。", "paused");
-      } else if (this.camera.state === "running") {
-        this.retryCount = 0;
-        this.connect();
-      }
-    });
+    document.addEventListener("visibilitychange", () => this.handleVisibility());
     window.addEventListener("offline", () => {
       if (this.camera.state === "running") this.stop("网络离线，请恢复网络后重试。", "error");
     });
@@ -164,6 +160,56 @@ export class DetectionClient {
     document.getElementById("controls-hint").textContent = "开始后会开启摄像头，并将画面交给电脑检测。";
     this.setStatus("idle", "点击“开始检测”，允许摄像头访问后即可检测。");
     void this.loadHealth();
+  }
+
+  /** 区分用户主动打开的相册与一般切后台；相册期间不取帧、不传帧，但短暂保留原会话。 */
+  handleVisibility() {
+    if (document.hidden) {
+      if (this.camera.state !== "running") return;
+      if (this.interaction.photoFlowActive && this.socket?.readyState === WebSocket.OPEN) {
+        this.photoPaused = true;
+        this.photoPauseDeadline = this.interaction.photoDeadline;
+        clearTimeout(this.photoPauseTimer);
+        this.photoPauseTimer = setTimeout(() => {
+          if (!this.photoPaused) return;
+          this.camera.stop();
+          this.interaction.setPhotoStatus("error", "选择照片已超时，检测已停止，请重新开始。");
+        }, Math.max(0, this.photoPauseDeadline - Date.now()));
+        this.camera.pauseCapture();
+        cancelAnimationFrame(this.animation);
+        clearTimeout(this.responseTimer);
+        this.animation = this.responseTimer = null;
+        this.setStatus("paused", "正在系统相册选择照片，已暂停摄像头取帧与传输。");
+      } else this.stop("页面在后台，已暂停检测。", "paused");
+      return;
+    }
+    if (this.photoPaused) {
+      // 浏览器在后台可能延迟计时器；返回时再按真实时间检查，禁止超时后自动恢复设备。
+      const expired = Date.now() >= this.photoPauseDeadline;
+      this.photoPaused = false;
+      clearTimeout(this.photoPauseTimer);
+      this.photoPauseTimer = null;
+      if (expired) {
+        this.camera.stop();
+        this.interaction.setPhotoStatus("error", "选择照片已超时，检测已停止，请重新开始。");
+        return;
+      }
+      this.camera.resumeCapture();
+      if (this.socket?.readyState === WebSocket.OPEN && this.camera.state === "running") {
+        this.setStatus("connected", "已返回页面，继续使用原会话登记照片与检测。");
+        const generation = this.generation;
+        // 隐藏前可能有一帧正在电脑处理；给该帧重新计时，不另发第二帧。
+        if (this.pending) this.responseTimer = setTimeout(() => {
+          if (generation === this.generation) this.fail("返回相册后等待检测结果超时。", "FRAME_TIMEOUT", true);
+        }, RESPONSE_TIMEOUT_MS);
+        this.tick(performance.now(), generation);
+        return;
+      }
+    }
+    if (this.camera.state === "running" && !this.socket) {
+      this.retryCount = 0;
+      this.connect();
+    }
   }
 
   /** 读取同一服务的健康信息，更新设备/模型；失败不阻止用户稍后重试检测。 */
@@ -208,6 +254,7 @@ export class DetectionClient {
   /** 摄像头准备好后连接同一服务；HTTP 自动选 ws，HTTPS 自动选 wss。 */
   connect() {
     if (this.camera.state !== "running" || document.hidden) return;
+    this.camera.resumeCapture();
     this.closeTransport();
     const generation = this.generation;
     this.setStatus("connecting", "摄像头已开启，正在连接检测服务…");
@@ -380,6 +427,11 @@ export class DetectionClient {
 
   /** 使旧会话失效，清计时器和待回帧；旧编码/旧连接回调随后完成也不能生效。 */
   closeTransport() {
+    this.photoPaused = false;
+    this.photoPauseDeadline = 0;
+    clearTimeout(this.photoPauseTimer);
+    this.photoPauseTimer = null;
+    this.camera.resumeCapture();
     this.generation += 1;
     cancelAnimationFrame(this.animation);
     this.animation = null;

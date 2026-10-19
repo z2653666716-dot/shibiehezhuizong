@@ -4,6 +4,9 @@
  */
 import { logger } from "./logger.js";
 
+// 只有用户主动打开相册后的短时间才保留视频会话；不能把任意切后台当成选照片。
+const PHOTO_PICKER_TIMEOUT_MS = 60000;
+
 export class TargetInteraction {
   constructor(canvas, readState, redraw) {
     this.canvas = canvas;
@@ -21,13 +24,23 @@ export class TargetInteraction {
     this.recordAllowed = false;
     this.recording = false;
     this.photoUploading = false;
+    this.photoSelecting = false;
+    this.photoDeadline = 0;
+    this.photoTimer = null;
+    this.photoController = null;
     this.photoIdentity = null;
     this.photoInput = document.getElementById("photo-file");
     document.getElementById("upload-photo").onclick = () => {
-      if (this.session && !this.photoUploading) this.photoInput.click();
+      if (this.session && !this.photoUploading && !this.photoSelecting) this.beginPhotoSelection();
       else this.toast("请先开始检测，再选择照片");
     };
-    this.photoInput.onchange = () => void this.uploadPhoto();
+    this.photoInput.onchange = () => { this.photoSelecting = false; void this.uploadPhoto(); };
+    this.photoInput.addEventListener("cancel", () => {
+      if (!this.photoSelecting) return;
+      this.finishPhotoFlow();
+      this.setPhotoStatus(this.photoIdentity ? "registered" : "idle",
+        this.photoIdentity ? "已取消选择新照片，原登记目标保持不变。" : "已取消选择照片，尚未登记。");
+    });
     document.getElementById("record-video").onclick = () => void this.toggleRecord();
     canvas.tabIndex = 0;
     canvas.setAttribute("aria-label", "目标操作：短按选中，长按或按 L 锁定");
@@ -115,8 +128,24 @@ export class TargetInteraction {
 
   /** 输入同源接口与请求选项，输出 JSON；失败抛出服务端中文提示。 */
   async request(path, options = {}) {
-    const response = await fetch(path, { cache: "no-store", signal: AbortSignal.timeout(15000), ...options });
-    const body = await response.json();
+    let response, body;
+    try {
+      response = await fetch(path, { cache: "no-store", signal: AbortSignal.timeout(15000), ...options });
+    } catch (cause) {
+      const timeout = ["TimeoutError", "AbortError"].includes(cause.name);
+      const error = new Error(timeout ? "等待电脑响应超时，请检查连接后重试。" : "未能连接电脑，请检查热点和网页地址。", { cause });
+      error.code = timeout ? "ACTION_TIMEOUT" : "ACTION_NETWORK_ERROR";
+      throw error;
+    }
+    try {
+      body = await response.json();
+      if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("invalid response shape");
+    }
+    catch {
+      const error = new Error(`电脑返回的内容无法解析（HTTP ${response.status}），请检查服务状态。`);
+      error.code = "ACTION_BAD_RESPONSE";
+      throw error;
+    }
     // 只记录去掉查询凭据后的接口路径；请求编号可与电脑端同一操作关联，不序列化照片响应。
     logger.record(response.ok ? "info" : "warn", `操作 ${path.split("?")[0]} 状态${response.status}`,
       { source: "interaction", code: body.code || "ACTION_RESULT", seq: this.seq,
@@ -209,7 +238,7 @@ export class TargetInteraction {
   accept(result) {
     if (this.session !== result.session_id) { this.reset(); this.session = result.session_id || null; }
     this.seq = result.seq;
-    document.getElementById("upload-photo").disabled = !this.session || this.photoUploading;
+    document.getElementById("upload-photo").disabled = !this.session || this.photoUploading || this.photoSelecting;
     document.getElementById("record-video").disabled = !this.recordAllowed || !this.session;
     const identities = result.identities || [];
     const key = JSON.stringify(identities);
@@ -293,25 +322,77 @@ export class TargetInteraction {
       : `${identity.id}：已登记，但视频中尚未确认同一人；不会据此显示实线绿框。`;
   }
 
+  /** 只有明确的选照/上传操作在时限内才成立，供app.js区分系统相册和一般切后台。 */
+  get photoFlowActive() {
+    return (this.photoSelecting || this.photoUploading) && Date.now() < this.photoDeadline;
+  }
+
+  /** 用户点上传后先标记相册流程，再打开原生选择器，避免visibilitychange先清空会话。 */
+  beginPhotoSelection() {
+    // 使上一次已经超时但尚未结束的请求失效，防止它回来覆盖这一次选照状态。
+    this.photoController?.abort();
+    this.photoController = null;
+    this.photoSelecting = true;
+    this.photoDeadline = Date.now() + PHOTO_PICKER_TIMEOUT_MS;
+    this.photoInput.value = "";
+    document.getElementById("upload-photo").disabled = true;
+    this.setPhotoStatus("selecting", "请选择照片；系统相册打开期间暂停传帧，最多等待60秒。");
+    clearTimeout(this.photoTimer);
+    this.photoTimer = setTimeout(() => {
+      this.photoController?.abort();
+      this.finishPhotoFlow();
+      this.setPhotoStatus("error", "选择照片已超时，请返回页面后重新操作。");
+    }, PHOTO_PICKER_TIMEOUT_MS);
+    try { this.photoInput.click(); }
+    catch {
+      this.finishPhotoFlow();
+      this.setPhotoStatus("error", "浏览器未能打开相册，请使用浏览器的照片访问权限后重试。");
+    }
+  }
+
+  /** 清理一次选照流程和按钮；视频模块独立限制后台暂停时长，不依赖安卓事件先后顺序。 */
+  finishPhotoFlow() {
+    this.photoSelecting = false;
+    this.photoUploading = false;
+    this.photoDeadline = 0;
+    clearTimeout(this.photoTimer);
+    this.photoTimer = null;
+    document.getElementById("upload-photo").disabled = !this.session;
+  }
+
   /** 用户手动选照片后才传给同一电脑；FormData只存在内存，请求结束清理文件输入。 */
   async uploadPhoto() {
     const file = this.photoInput.files?.[0];
     const session = this.session;
-    if (!file || !session || this.photoUploading) return;
+    if (this.photoUploading) return;
+    if (!file || !session) {
+      this.finishPhotoFlow();
+      if (file && !session) {
+        this.photoInput.value = "";
+        this.setPhotoStatus("error", "选照期间视频会话已结束，请重新开始检测后再选择照片。");
+      }
+      return;
+    }
     if (file.size > 6 * 1024 * 1024 - 2048) {
+      this.finishPhotoFlow();
       this.sendInteraction("photo_too_large", { reason: "size_limit" });
       this.setPhotoStatus("error", "本次未登记：请选择小于 6 MiB 的 JPEG/PNG 照片。");
       this.toast("请选择小于 6 MiB 的 JPEG/PNG 照片"); this.photoInput.value = ""; return;
     }
     this.photoUploading = true;
+    // 没有经过相册点击标记的文件变更，也只允许有限时间上传，不能无限等待。
+    if (!this.photoDeadline) this.photoDeadline = Date.now() + 30000;
+    const controller = new AbortController();
+    this.photoController = controller;
+    const timer = setTimeout(() => controller.abort(), 30000);
     document.getElementById("upload-photo").disabled = true;
     const form = new FormData(); form.append("photo", file);
     try {
       this.setPhotoStatus("uploading", "正在上传到这台电脑并提取人物特征，请稍候…");
       this.toast("正在提取照片中的人物…");
       const body = await this.request("/api/identities/photo?session_id=" + encodeURIComponent(session),
-        { method: "POST", body: form });
-      if (session === this.session) {
+        { method: "POST", body: form, signal: controller.signal });
+      if (session === this.session && controller === this.photoController) {
         this.photoIdentity = { id: body.identity_id, seen: false };
         this.setPhotoStatus("registered", `${body.identity_id} 照片登记成功。${body.message}`);
         document.getElementById("photo-match-status").textContent = "等待后续视频帧确认是否为同一人；无需手动长按。";
@@ -322,16 +403,18 @@ export class TargetInteraction {
         this.toast(body.message);
       }
     } catch (error) {
-      if (session === this.session) {
+      if (session === this.session && controller === this.photoController) {
+        logger.captureError("照片登记失败", error, { source: "interaction", code: error.code || "PHOTO_UPLOAD_FAILED" });
         const hint = error.code === "NO_TARGET_IN_PHOTO" ? " 当前版本不支持脸部特写，请使用上半身或全身清楚的照片。" : "";
         this.setPhotoStatus("error", "本次登记失败：" + error.message + hint);
         this.toast(error.message);
       }
     } finally {
+      clearTimeout(timer);
       // 停止后即使旧上传请求才返回，也不能清空新会话的文件选择或修改其按钮。
-      if (session === this.session) {
-        this.photoUploading = false;
-        document.getElementById("upload-photo").disabled = false;
+      if (session === this.session && controller === this.photoController) {
+        this.photoController = null;
+        this.finishPhotoFlow();
         this.photoInput.value = "";
       }
     }
@@ -370,6 +453,9 @@ export class TargetInteraction {
   /** 停止/切换视频清理会话、选择和身份卡片，禁止旧操作落到新视频。 */
   reset() {
     this.session = null; this.selected = null; this.identitiesKey = "";
+    this.photoController?.abort();
+    this.photoController = null;
+    this.finishPhotoFlow();
     this.recording = false;
     this.photoUploading = false; this.photoIdentity = null;
     this.setPhotoStatus("idle", "尚未登记照片。开始检测后，点击顶部“上传照片”。");
