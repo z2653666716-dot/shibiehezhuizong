@@ -1,6 +1,6 @@
 """按白名单打包可运行源码和公开样例，排除环境、证书、输出和所有实拍素材。
 
-默认输出outputs/delivery/vitrack_source.zip及清单；只有同时提供学号和姓名才用课程命名。
+默认输出outputs/delivery/vitrack_source.zip及摘要报告，支持--output指定目标文件。
 """
 import argparse
 import hashlib
@@ -11,6 +11,9 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_BYTES = 200 * 1024 * 1024
+# 这些文件仍可保留在开发者本机，但不进入面向其他使用者的源码包。
+LOCAL_DOCS = {"docs/branch_testing.md", "docs/delivery_guide.md",
+              "docs/ViTrack-视觉目标检测与跟踪-实施方案.md"}
 
 
 def collect_files(root=ROOT):
@@ -24,9 +27,10 @@ def collect_files(root=ROOT):
         for path in directory.rglob("*"):
             if (path.is_file() and path.suffix in extensions and not path.is_symlink()
                     and path.resolve().is_relative_to(directory.resolve())
+                    and path.relative_to(root).as_posix() not in LOCAL_DOCS
                     and "__pycache__" not in path.parts):
                 files.add(path)
-    named = ["run.py", "README.md", "PROGRESS.md", "AGENTS.md", ".gitignore", ".env.example", "requirements.txt", "requirements.lock.txt",
+    named = ["run.py", "README.md", ".gitignore", ".env.example", "requirements.txt", "requirements.lock.txt",
              "web/icons/icon-192.png", "web/icons/icon-512.png",
              "weights/yolo11n.pt", "weights/mobilenet_v3_small-047dcff4.pth", "weights/yolo11s.pt",
              "weights/osnet_x0_25_msmt17.onnx", "weights/face_detection_yunet_2023mar.onnx",
@@ -51,9 +55,8 @@ def make_package(output, root=ROOT):
         raise ValueError("解压源码文件超过200MiB，未生成压缩包")
     entries = [{"path": path.relative_to(root).as_posix(), "bytes": path.stat().st_size,
                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest()} for path in files]
-    manifest = {"kind": "source_package_not_final_course_submission", "files": entries,
-                "contains_user_media": False, "contains_env_or_certificates": False,
-                "manual_deliverables": ["论文正文", "实验报告正文与课堂模板", "最终演示视频", "课程汇报PPT", "学号姓名及截止日期"]}
+    manifest = {"kind": "source_package", "files": entries,
+                "contains_user_media": False, "contains_env_or_certificates": False}
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(".zip.part")
     with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -71,10 +74,10 @@ def make_package(output, root=ROOT):
 
 
 def main():
-    """读取可选命名参数；没有学号姓名时用中性名称，不编造课程个人信息。"""
+    """读取输出路径并打包；旧命名参数保留兼容，常规使用只需--output。"""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--student-id")
-    parser.add_argument("--student-name")
+    parser.add_argument("--student-id", help=argparse.SUPPRESS)
+    parser.add_argument("--student-name", help=argparse.SUPPRESS)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if bool(args.student_id) != bool(args.student_name):

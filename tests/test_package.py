@@ -6,6 +6,8 @@ def test_package_excludes_private_and_generated_files(tmp_path):
     """构造目录边界，确认只收入源码和明确列出的公开样例。"""
     names = ["run.py", "app/main.py", "web/index.html", "web/icons/icon-192.png", "docs/user_guide.md", "README.md",
              "data/samples/test.jpg", "data/samples/private_person.jpg", ".env", "certs/key.pem",
+             "AGENTS.md", "PROGRESS.md", "docs/branch_testing.md", "docs/delivery_guide.md",
+             "docs/ViTrack-视觉目标检测与跟踪-实施方案.md",
              "envs/vitrack/secret.py", "outputs/recordings/private.mp4", "work/camera.jpg", "docs/private.jpg", "docs/private.txt"]
     for name in names:
         path = tmp_path / name

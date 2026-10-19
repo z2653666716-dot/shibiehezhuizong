@@ -1,172 +1,76 @@
-# ViTrack：视觉目标检测与跟踪
+# ViTrack
 
-当前收尾基线为 **`baseline/tested-v0.3.6`**，运行版本`0.3.6-distance-reentry`，包含人脸归属、短漏检恢复、身体连续保持、走近补脸及距离重入修复。各功能的来历及本轮现场反馈见 [分支与测试说明](docs/branch_testing.md)。原8446基线和各功能分支均保留，main未合并。
+手机采集、电脑推理的实时人物跟踪系统。浏览器打开页面后，可以长按选中一个人，或上传单人照片登记目标；系统在后续画面中持续匹配，并在目标离开、重新入镜时尝试恢复原身份。
 
-手机负责采集和显示，电脑执行检测、跟踪和身份匹配。已测试的新功能通过`scripts/run_identity.ps1`启用YOLO11n、BoT-SORT、OSNet和YuNet/SFace人脸辅助；普通启动仍保持原appearance模式。支持浏览器推帧和IP Webcam两种接入方式。
+项目主要处理两个问题：人物移动后，检测框的轨迹编号可能改变；同一个人走近、转身后，外观也会发生变化。ViTrack 将短时轨迹和身份模板分开，用人脸、身体外观与运动连续性共同判断是否继续锁定。
 
-已实现短按选中、600ms长按锁定、右键/L锁定、身份条与删除、丢失后重识别、照片注册、镜像、可选录制、PWA、性能测试和源码打包。
+## 功能
 
-**功能已实现，不代表所有场景准确率已验收。** 当前算法完整自动检查91项通过；用户对A/B反馈良好，C的“跟踪中”提示已澄清，0.3.6在本轮远处锁定、走近后离开并近处重入的复测中未再出现上一版问题。没有正式准确率、恢复耗时或手机FPS测量；多人交叉、不同光照、照片跨场景匹配和安卓主屏安装仍需完整验收。衣物误检按用户要求暂缓。
+- 实时人物检测、轨迹编号和检测框显示。
+- 长按锁定、切换目标、取消锁定；同一会话只跟踪一个选定身份。
+- 单人照片登记，支持清晰人脸照片。
+- 短时漏检恢复、远近变化中的模板补充，以及离开画面后的重新匹配。
+- 前后摄像头切换、左右镜像、IP摄像头接入与PWA页面缓存。
+- 前后端诊断记录，可追查手势、接口请求与身份状态变化。
 
-默认禁止保存实拍内容。照片、人物裁剪和缩略图仅在内存；停止视频或断开会话后清除身份。录制按钮和接口默认均拒绝保存，服务启动不会自动打开摄像头。
+## 实现
 
-界面会在实时画面上方常驻显示照片登记成功/失败、ID和缩略图；登记成功与视频中匹配成功分别显示。hybrid模式支持清晰单人人脸照片；appearance模式仍以人物整体外观匹配。手动锁定请求与后续身份核验分别显示；绿色实线的“跟踪中”表示仍保持目标但当前依靠连续性，绿色虚线“识别中”表示正在确认。
-
-定位绿框一闪即消失时，可运行 `envs/vitrack/python.exe -X utf8 scripts/analyze_tracking.py`。脚本读取现有轮换文字记录，输出 `outputs/tracking/diagnostic_report.json`，区分手势取消、操作拒绝以及锁定后因何种分数/门槛撤销绑定；报告不含图片或向量，次数统计不等于识别准确率。
-
-## 启动当前已测试的新功能
-
-课堂演示推荐直接在编辑器中打开项目根目录的 **`run.py`**，点击右上角“运行Python文件”的三角按钮。先开启电脑移动热点并让手机连接，再点击运行；不用手动激活Conda或输入PowerShell。入口会自动选择`envs/vitrack/python.exe`，检查热点、证书、模型与8450端口，启动同一套hybrid方法。
-
-等待终端出现`Application startup complete`，手机打开`https://192.168.137.1:8450`，确认页面版本为`0.3.6-distance-reentry`，再由用户手动开始并授权相机。结束时先在手机停止检测，再在运行终端按Ctrl+C关闭服务。运行按钮针对当前打开的文件，请打开`run.py`，不要直接运行`app/config.py`或`app/main.py`。
-
-`run.py`顶部`PORT`可调整监听端口，手机网址需同步变化；`PHONE_IP`对应电脑热点地址，修改后证书也必须包含新地址。默认使用已测试的8450与192.168.137.1即可。`--check`是开发检查选项，只验证启动条件，不启动服务。入口不自动打开浏览器、相机或IP Webcam，热点关闭、模型缺失或端口占用会给出中文提示。
-
-原命令行方式仍可使用：
-
-本机已有环境、模型和热点证书时，在项目根目录执行：
-
-```powershell
-git switch baseline/tested-v0.3.6
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_identity.ps1 -Mode phone -Port 8450 -LanIP 192.168.137.1
-```
-
-启动前开启电脑移动热点、手机连接热点，并确认网关仍为192.168.137.1。手机打开`https://192.168.137.1:8450`，核对顶部版本`0.3.6-distance-reentry`。本命令只启动服务，摄像头仍须本次明确同意并手动开始；停止后确认摄像头提示结束。切分支前先停止旧服务，并保留自己的未提交改动。
-
-以下三步适用于首次准备环境或运行原appearance模式；要体验本次收拢的新功能，使用上面的`run_identity.ps1`。
-
-## 三步启动原appearance模式
-
-在项目根目录打开PowerShell。已配置好的本机不必重复安装。
-
-```powershell
-# 1. 在项目专用环境安装依赖，不改变其他conda环境
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_env.ps1 -InstallDependencies
-
-# 2. 准备本地检测与外观权重，已有完整模型时复用
-powershell.exe -NoProfile -File .\scripts\fetch_weights.ps1
-.\envs\vitrack\python.exe -X utf8 scripts/fetch_reid_weights.py
-
-# 3. 启动服务，之后由用户决定是否开始检测
-powershell.exe -NoProfile -File .\scripts\run.ps1 -Mode pc
-```
-
-打开终端输出的 `http://localhost:8000/pc`。只有你点击“开始检测”并授予浏览器权限后才使用摄像头。没有授权时可运行后面的公开样例检查。
-
-本轮自动审批阻止了重启已有8443/8001服务，这两个后台服务尚未升级。使用新版源码时，可在终端用 `scripts/run.ps1 -Mode pc -Port 8002` 启动独立端口；手机模式可改用 `-Mode phone -Port 8444`。这些命令不会自动打开摄像头。
-
-配置优先级：进程环境变量 > 项目 `.env` > `app/config.py` 默认值。需要持久配置时复制 `.env.example` 为 `.env`，不要把私有配置放进源码包。
-
-## 手机接入
-
-浏览器模式：手机和电脑接同一Wi-Fi，生成证书，再启动手机服务。
-
-```powershell
-.\envs\vitrack\python.exe -X utf8 scripts/gen_cert.py
-powershell.exe -NoProfile -File .\scripts\run.ps1 -Mode phone
-```
-
-脚本输出手机HTTPS地址。多网卡时按提示用 `-LanIP` 指定与手机相连的电脑地址。手机需要信任证书，显示安全环境就绪后，仍由你手动开始和授权。自签证书兼容性以手机实际显示为准。
-
-IP Webcam降级模式：在本次明确同意使用手机摄像头后，由你启动手机App，关闭云广播、录制和音频，把App显示的视频地址填入配置。
-
-```powershell
-# 替换成手机实际地址；配置本身不会连接设备
-$env:SOURCE = 'ipcam'
-$env:IPCAM_URL = 'http://手机实际地址:8080/video'
-powershell.exe -NoProfile -File .\scripts\run.ps1 -Mode pc
-```
-
-电脑打开输出地址，勾选同意并点击“开始读取”。停止电脑读取后，还要在手机停止IP Webcam，确认摄像头使用提示结束。此模式不会打开电脑浏览器摄像头。
-
-## 操作方法
-
-- 白框是当前检测，`#1` 是本次视频里的轨迹号。
-- 短按框内变黄；按住0.6秒、右键或选中后按L，登记为 `ID-01` 并显示绿框。同一时间只锁一个人，锁第二个人会解除第一个；再次长按绿框取消，取消后不会自动恢复旧目标。目标太新、消失或太小时会说明失败原因。
-- 绿色虚线表示匹配确认中，绿色实线表示已绑定身份。消失目标不补画框，身份条显示离线。
-- 轨迹过期不删除身份；停止视频或断开会话后清除身份。匹配依据外观，不是身份认证，不保证换衣后仍能匹配。
-- 先开始检测，再上传照片。照片登记也会替换当前锁定目标。接受小于6MiB、宽高不超过4096的JPEG/PNG。hybrid模式要求单人照片，多人拒绝；appearance模式保留最大人物提示。照片仅发给提供页面的电脑，在内存处理。
-- 镜像同时处理画面、框和触点，标签保持正向。可取消“左右镜像”。
-- 浏览器提供安装入口时，可添加到主屏幕。离线只能打开界面，检测仍需连接电脑；缓存不含帧、照片、缩略图或视频。
-- 当前录制禁用。只有以后另行明确允许保存、修改保存策略并在页面确认后才录制本机标注MP4；功能存在不等于已获保存授权。
-
-## 项目结构与阅读顺序
+手机只负责采集和显示，模型运行在电脑上：
 
 ```text
-run.py              # 编辑器运行按钮的一键手机演示入口，自动使用项目Python
-app/
-  main.py           # 后端入口app.main:app，启停与路由
-  config.py         # 配置读取和检查
-  schemas.py        # 请求、检测框和结果格式
-  detector.py       # BGR图像转YOLO像素框
-  tracker.py        # 每路视频的ByteTrack关联
-  session.py        # 观测、锁定、候选与身份状态
-  reid.py           # 裁剪转外观和颜色特征
-  gallery.py        # 多模板身份库与候选排序
-  pipeline.py       # 解码、检测、跟踪、重识别的共享入口
-  photos.py         # 限大小的内存照片解析
-  recorder.py       # 明确允许后才录制
-  ipcamera.py       # 确认后读取IP源，停止时释放
-web/
-  index.html        # 页面结构
-  start.js          # 前端入口，选择唯一视频模式
-  app.js / camera.js # 浏览器取流与设备管理
-  ipcam.js          # IP源观看和停止
-  interaction.js    # 共用手势、照片、身份条
-  box_smoother.js   # 仅平滑显示坐标
-  style.css         # 手机和电脑布局
-  manifest.webmanifest / sw.js / icons/ # PWA
-scripts/            # 安装、启动、标定、基准、打包
-tests/              # 自动检查
-docs/               # 原方案、使用和交付说明
-weights/            # 本地模型
-outputs/            # 数值报告和源码包
-work/               # 临时检查，不作为交付
+手机浏览器 ── HTTPS / WSS ──> FastAPI
+                               ├─ YOLO11n：人物检测
+                               ├─ BoT-SORT + OSNet：轨迹关联与身体外观
+                               └─ YuNet + SFace：人脸检测与匹配
+手机画面与叠框 <─────────────── 检测框、身份与状态
 ```
 
-建议先读 `schemas.py` 理解一帧结果，再读 `main.py → pipeline.py → session.py`，最后读 `tracker.py/reid.py/gallery.py` 和 `web/interaction.js`。逐函数的用途、输入、输出和关键步骤见[代码阅读指南](docs/code_guide.md)。
+前端使用原生JavaScript和Canvas。后端为每条视频连接维护独立会话，共享模型按帧串行推理；浏览器最多保留一帧在途，避免网络慢时积压旧画面。
 
-## 常见参数
+## 运行
 
-- `DET_CONF=0.35`：检测门槛，调高也可能漏人。保持默认，不再围绕衣物反复调整。
-- `DET_IMGSZ=640`：模型内部尺寸；`MAX_SIDE=640` 是传输最长边。持续慢时建议传输降到480，模型仍为640。
-- `DET_DEVICE=0`：第一张GPU；`cpu` 用于无GPU电脑，通常更慢。
-- `TRACK_MAX_AGE=30`：轨迹保留的处理帧数，不是秒数。
-- `REID_TAU_HIGH=0.90`：默认更保守，当前帧、登记锚点和外观分量都需支持匹配，可能增加漏匹配。`REID_TAU_LOW=0.45`保留兼容旧配置，新流程不再用它允许旧绿框持续。
-- `REID_MARGIN=0.05`：候选接近或更像登记反例时不绑定；`REID_CONFIRM_FRAMES=6`要求连续确认，`REID_COLOR_MIN=0.60`单独检查颜色。不确定时回白框，不用旧EMA维持绿框。
-- `REID_EMA=0.9`：特征平滑，越大越保留旧外观；`REID_MAX_TEMPLATES=5` 限制模板数。
-- `IDENTITY_LIMIT=20`：会话身份上限，日常建议不超过5人。
-- `ALLOW_MEDIA_SAVE=false`：当前保持禁止保存，不因启动或长按自动改变。
+目前启动脚本主要面向 **Windows + Python 3.11**。首次运行需要准备项目环境和HTTPS证书，步骤见 [安装与使用](docs/setup.md)。仓库已包含所需模型；下载脚本可校验或补齐模型文件。
 
-实际采用8×4×4=128维HSV颜色特征和576维外观特征。原方案HSV分箱与维度互相矛盾，实际实现已在进度中注明。纯颜色模式须显式选择，权重缺失不会静默降级。
+准备完成后：
 
-## 不使用摄像头的验证
+1. 开启电脑移动热点，让手机连接。
+2. 打开根目录的 `run.py`，点击编辑器运行按钮；入口会自动使用项目Python环境。
+3. 等待终端出现 `Application startup complete`，手机打开终端显示的HTTPS地址。
+4. 点击“开始检测”并允许摄像头，然后长按人物框或上传单人照片。
+
+`run.py`默认使用`192.168.137.1:8450`，热点地址或端口不同可在文件顶部修改；证书需要包含实际访问地址。结束时先停止手机检测，再在电脑终端按Ctrl+C。
+
+白框表示检测结果，绿色虚线表示正在确认，绿色实线表示已经绑定目标。“跟踪中”表示当前依靠连续性维持，不等于这一帧重新通过了人脸匹配。
+
+## 设计中的几个取舍
+
+- **轨迹号不充当身份。** 新轨迹需要重新取得匹配证据，不能直接沿用已经失踪的人的绿框。
+- **多人交叠时允许暂时不匹配。** 人脸与身体框按一对一约束关联，归属存在歧义时不强行选人。
+- **模板更新受限。** 保留最初登记模板，仅在证据足够时补充少量新模板，避免跟踪错误逐步污染身份库。
+- **状态与画面同帧。** 帧号、会话凭据和请求编号用于关联操作，过期响应不能覆盖新会话。
+
+具体流程见 [代码结构](docs/code_guide.md) 和 [身份跟踪策略](docs/tracking_upgrade.md)。
+
+## 测试
 
 ```powershell
 .\envs\vitrack\python.exe -X utf8 -m pytest tests --basetemp=work/pytest -q
-.\envs\vitrack\python.exe -X utf8 scripts/verify_stream.py --duration 60 --report outputs/acceptance/full_stream_60s.json
-.\envs\vitrack\python.exe -X utf8 scripts/bench.py --frames 10
-.\envs\vitrack\python.exe -X utf8 scripts/calibrate_reid.py --diagnostic --output outputs/reid/public_diagnostic.json
-.\envs\vitrack\python.exe -X utf8 scripts/calibrate_reid.py --diagnostic --backend color_histogram --output outputs/reid/color_diagnostic.json
 ```
 
-浏览器检查使用独立Edge和公开样例，始终拒绝摄像头、麦克风权限，不退回真实设备。未装Edge时，浏览器检查明确跳过。
+测试覆盖人脸归属、候选确认、轨迹中断、距离变化、多人竞争、锁定交互、照片上传、会话清理与打包边界。状态测试使用合成框和已知向量，模型测试使用公开样例；浏览器测试使用独立Edge环境，不调用物理摄像头。
 
-基准默认比较本地n/s模型、480/640/800和CPU/GPU。可选s模型用 `scripts/fetch_weights.ps1 -Model s` 获取；缺失时标记unavailable，不隐式下载。检测器FPS不等于完整链路FPS。
+这类测试验证的是实现与状态规则，不能替代识别准确率评测。基准、公开样例检查和源码包验证见 [测试说明](docs/testing.md)。
 
-正式标定使用 `--pairs 配对清单.json`。格式为 `{"same":[["同人A.jpg","同人B.jpg"]],"diff":[["人物A.jpg","人物C.jpg"]]}`，路径相对清单，输入应为有授权的既有人物裁剪。每类至少15对、无重复/冲突才允许 `--write-env`。公开图增强诊断禁止自动修改生产门槛。
+## 适用范围
 
-实际记录：公开样例完整链路约60秒、1190帧、19.837FPS，内存RSS增加0.36MiB，最多1帧在途；12组检测器基准已生成。详细结果以 `PROGRESS.md` 和数值报告为准，不能作为实拍准确率。
+目前以同一次穿着、脸部清晰、缓慢或正常移动的室内场景为主。已做手机单人、双人轻微移动，以及远处锁定后走近、离开再重入的人工检查；尚未建立覆盖不同人物、光照、遮挡和交叉运动的正式评测集。
 
-## 源码交付
+相似衣着、无人穿着的衣物、严重遮挡、快速移动和过小人脸仍可能导致误检或丢失。不保证换衣后识别，也不用于身份认证。
 
-```powershell
-.\envs\vitrack\python.exe -X utf8 scripts/package_source.py
-.\envs\vitrack\python.exe -X utf8 scripts/verify_package.py
-```
+浏览器采集模式的画面显示在手机端，电脑打开另一个页面不会自动看到手机会话；投影展示需要另行投屏。PWA离线缓存仅提供页面，推理仍需连接电脑。
 
-第一条生成 `outputs/delivery/vitrack_source.zip` 和SHA256清单，包含必要模型与指定公开样例，排除环境、证书、.env、work、outputs和实拍内容，检查体积不超过200MiB。
+## 数据与依赖
 
-第二条在独立解压目录核对摘要，用现有Python环境启动包内服务，实际加载模型、检测公开图、锁定并检查默认禁止保存。它不连接摄像头，也不代表已在另一台电脑重新安装依赖。
+默认不保存画面、照片、裁剪或身份特征；模板只在会话内存中保留，停止后清除。诊断记录仅含匿名编号、原因和数值。摄像头由页面上的开始操作触发，录制默认关闭。
 
-源码包不包含全部课程材料。论文正文、课堂实验报告、最终演示视频和个人信息按[交付指南](docs/delivery_guide.md)准备，汇报材料应按实际验收结果整理。第三方资源见[来源说明](docs/third_party.md)。
+模型、依赖和公开图片的来源及许可见 [第三方资源](docs/third_party.md)。

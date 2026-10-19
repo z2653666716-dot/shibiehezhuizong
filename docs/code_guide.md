@@ -1,102 +1,66 @@
-# ViTrack 代码阅读指南
+# 代码结构
 
-这里解释实际实现，不替代原方案。先把“一帧画面”理解成一个三维像素数组：高度×宽度×三个颜色通道。服务器依次处理它，前端只负责显示结果。
+## 入口与请求链路
 
-## 从入口读到结果
+`run.py`负责选择项目解释器和检查启动条件，再启动`app.main:app`。`app/main.py`中的`create_app()`注册HTTP/WebSocket接口，`lifespan()`在启动时加载模型、创建`Pipeline`，在退出时释放后台任务。
 
-1. `app/main.py` 的 `create_app()` 建立路由；`lifespan()` 在服务开始时加载配置、检测模型和 `Pipeline`，退出时停止IP读取。`yield` 前是准备阶段，后面的 `finally` 是关闭阶段。
-2. 浏览器的 `/ws/stream` 为每条连接创建独立会话，接收 `FrameMessage`，调用 `Pipeline.process_message()`。IP模式的 `run_ipcam()` 只有在明确启动后才循环读取，调用 `process_frame()`；多个观看者共用同一结果，不重复推理。
-3. `Pipeline._run()` 在后台线程中解码、检测、跟踪、匹配、组装 `FrameResult`。`asyncio.to_thread()` 让这些工作不阻塞网络事件循环；共享线程锁保证同一个模型一次只处理一个任务。
-4. `web/start.js` 先读取服务模式，再加载 `app.js` 或 `ipcam.js`。前者取本机浏览器画面，后者只接收IP源预览，不导入电脑摄像头管理模块。
+浏览器向`/ws/stream`发送带帧号的JPEG。`Pipeline.process_message()`解码后进入同一处理锁，依次完成检测、轨迹关联、身份核验，组装`FrameResult`返回。模型计算通过`asyncio.to_thread()`执行，避免阻塞网络事件循环；共享锁保证同一模型不会被多条连接同时推进。
 
-## 数据格式：schemas.py
+## 模块
 
-- `Detection`：检测器输出的一条像素框，含类别、名字、分数和四个边界。
-- `Box`：发给页面的一条归一化框，坐标除以图片宽高后变为0～1，页面再乘画布大小。附带轨迹号、身份号与none/candidate/locked状态。
-- `FrameResult`：一帧的序号、处理耗时、FPS、框、身份条、事件和随机会话凭据。
-- `LockRequest/SelectRequest/RecordRequest`：检查用户操作的数据类型与范围。
+```text
+run.py                      启动入口
+app/
+  main.py                   HTTP/WebSocket路由、生命周期
+  config.py / schemas.py    配置与消息约束
+  pipeline.py               单帧处理与模型调度
+  detector.py               YOLO人物检测
+  tracker.py                ByteTrack / BoT-SORT轨迹适配
+  session.py                会话、手动锁定与appearance后端
+  hybrid_session.py         人脸与身体联合身份状态机
+  faces.py                  YuNet/SFace、人脸质量与归属
+  person_features.py        OSNet行人特征
+  gallery.py                有限模板库
+  photos.py / ipcamera.py   照片解析、IP源生命周期
+web/
+  start.js                  按服务模式初始化页面
+  app.js / camera.js        浏览器采集与推帧
+  ipcam.js                  IP源预览
+  interaction.js            手势、照片登记、身份操作
+  box_smoother.js            显示框平滑
+tests/                      状态规则、模型、接口与浏览器检查
+```
 
-Pydantic模型拒绝无效数字、错误字段和不一致状态。例如绿框必须同时有身份号和轨迹号。`model_copy(update=...)` 用于一起替换有关联的状态字段，避免出现“先变绿、还没有身份号”的中间状态。
+`schemas.py`区分像素坐标的`Detection`和归一化坐标的`Box`。`FrameResult`带帧号、框、身份状态和会话凭据，前端据此关联画面与操作。
 
-## 检测和短时跟踪
+## 轨迹与身份
 
-`detector.py` 的 `Detector.detect(frame)` 接收BGR数组，用同一个YOLO模型预测，输出 `Detection` 列表。分数是模型当前结果，不是确认身份的概率。
+`Tracker`负责相邻帧关联，轨迹编号仅在视频会话内有意义。`HybridSession`负责判断当前轨迹是否仍属于登记目标。目标离开后可能换一个轨迹编号，身份库中的ID保持不变，重新匹配后才绑定到新轨迹。
 
-`tracker.py` 的 `Tracker.update(detections,width,height)` 接收像素框，按类别分别交给ByteTrack，输出同数量、同顺序的 `Box` 并补轨迹号。没有目标的空帧也更新跟踪器，目的是让失踪帧数继续增长。不会为消失目标补画预测框。
+`Gallery`保留最初登记模板，限制后续模板数量。人脸与身体模板分别管理，只有头部的观测不会作为全身外观输入。联合策略及模板更新条件见[身份跟踪策略](tracking_upgrade.md)。
 
-`Tracker.reset()` 清空轨迹但保留编号计数，防止旧选择误指向新目标。`snapshot()` 只返回活跃/丢失编号和帧数，供检查使用。
+appearance后端保留MobileNetV3和颜色直方图方案，用于兼容和对比；其阈值含义与OSNet后端不同。
 
-## 外观特征：reid.py
+## 会话隔离与清理
 
-- `crop_target(frame,xyxy)`：输入原图及归一化框，扩边约10%并截在图片范围内；人物太小时返回None。裁剪只在内存。
-- `FeatureExtractor.extract(crops,flip=False)`：把一批人物裁剪缩放成128×256，转RGB、做ImageNet归一化，再用本地预训练MobileNetV3得到576维外观。HSV采用8×4×4，共128维颜色特征。
-- 注册时 `flip=True`，原图和水平翻转各前向一次后平均；实时帧不翻转，节省计算。
-- `smooth(old,new)`：EMA特征平滑。0.9意味着保留旧特征的90%，加入新特征的10%，然后重新归一化。
-- `normalize()/cosine()`：把向量长度变为1，再求点积得到相似度。平方根融合权重使点积对应外观/颜色的加权余弦。
+每条浏览器视频连接拥有独立的轨迹、身份库与随机会话凭据。锁定接口同时检查会话、轨迹和帧号，防止过期画面上的操作落到新目标上。
 
-权重缺失会报错，不会临时下载或用随机模型冒充。纯颜色后端必须通过配置明确选择。可选OSNet没有安装，选择它会明确提示，不静默替换技术栈。
+`Pipeline.reset_tracker()`先撤销会话凭据，再等待已在执行的线程离开处理锁，最后清空画面、模板和缓存。取消异步等待不会自动结束底层推理线程，因此清理必须等待在途计算，避免迟到结果写回已结束的会话。
 
-## 身份库：gallery.py
+IP源使用独立采集任务，多位观看者共用同一帧结果，不重复更新轨迹。
 
-`Gallery.register(feature,...)` 创建ID和第一份模板；`score()` 与该身份所有模板比较，取最高分；`rank()` 给出最高、次高两个不同身份的分数。
+## 前端
 
-`append()` 只在确认匹配后增加模板，保留最初注册模板并限制总数。`summaries()` 只返回页面需要的编号、名称、在线状态，不返回特征向量。
+浏览器一次只发送一帧，上一帧未返回时跳过当前发送机会。IP源页面每显示完一帧再请求下一帧，避免慢客户端积压。
 
-当前防误认修正中，自动重匹配不再调用append，避免把误认的人追加成新模板。`supports()`同时检查本帧相似度、最初登记锚点、独立外观/颜色，以及登记时其他人的反例特征。
+`TargetInteraction`将触点转换为归一化坐标，镜像时还原横坐标，按住600ms后发出明确的lock/unlock请求。抬手、移动、取消或停止视频会终止手势计时；接口响应也会重新核对会话，避免旧请求覆盖新状态。
 
-“轨迹”和“身份”分开保存是重入匹配的关键：ByteTrack旧号过期后，Gallery中的ID仍在，重新入画的人拿到新轨迹号，再尝试匹配旧身份。
+`box_smoother.js`只平滑显示坐标，不修改检测分数和身份状态。`sw.js`只缓存界面资源，离线时禁用需要电脑服务的检测功能。
 
-## 会话状态机：session.py
+## 数据处理
 
-`VideoSession` 组合独立Tracker、Gallery、当前帧和 `Observation`：
+照片请求体限量读入内存，JPEG/PNG解码后检查尺寸并校正EXIF。联合模式要求单人照片，有清晰人脸时建立人脸模板；缩略图经带会话凭据的no-store接口提供。删除身份或停止会话会清除相关内存。
 
-- `update()` 输入检测框，推进帧数、连续命中数和失踪生命周期；画面尺寸改变会丢弃旧轨迹观测，身份库仍保留。
-- `process(frame,seq)` 输入当前帧和序号，逐帧批量提取人物特征，包括已绑定轨迹。旧轨迹号相同也不能跳过当前外观检查；本帧不支持即解除绿框，再比较候选相似度和差距，连续确认后绑定。
-- 多个可见人物竞争同一身份时，先比较所有候选，只有领先足够多的一个可继续确认；不会按检测数组顺序先到先得。
-- 目标消失、没有足够大的裁剪、候选变化或相似度不达标会中断连续确认。已绑定目标本帧不支持匹配时立即回白框，不再等低于0.45五次才处理。
-- `lock(track_id,seq)` 检查本帧可见、帧号未过期、至少五次稳定观测，使用翻转特征登记；错误返回 `TRACK_GONE/REID_NOT_WARM` 等中文原因。
-- `lock(...,action)`接收明确的lock/unlock操作，支持重试；旧调用省略action时采用切换语义。`register_identity()`先准备成功的新身份，再替换旧目标；`clear_lock()`清除旧身份及候选，确保同一时间仅一个锁定目标，重复长按可取消。
-- `select(x,y,seq)` 只在触点命中的框中选择最小者，空白处不吸附到远处人物。
-- `delete()` 清除身份模板/缩略图及绑定；`reset()` 结束录制并清除当前帧、轨迹和身份内存。
+录制模块需要保存配置与页面确认同时允许，默认关闭。诊断只记录匿名编号、状态、原因和标量，不记录图片、Base64或特征向量。
 
-身份不会跨视频连接永久保存。随机会话凭据把HTTP操作与正在观看的视频关联；同样的 `#1` 出现在两路视频时，操作彼此隔离。
-
-`Pipeline.reset_tracker()` 先撤销凭据，再等待处理线程离开锁、清理状态。断开连接的取消保护区很重要：取消异步等待不等于底层推理线程已经停止，不能让迟到线程重新写回旧状态。
-
-## 照片与可选录制
-
-`photos.py` 的 `decode_photo()` 输入限量请求体，内存解析multipart和JPEG/PNG，检查尺寸并还原EXIF方向。没有使用会把大文件暂存磁盘的默认上传对象。
-
-`Pipeline.register_photo()` 在同一处理锁中检测最大人物、裁剪、翻转提特征、登记Gallery。多人返回提示，无人明确报错。缩略图编码成内存JPEG，经no-store接口提供，删除或停止会话后失效。
-
-`recorder.py` 的 `Recorder.start()` 只有保存配置和confirm都允许才创建MP4；`write()` 接收当前帧/框，画标注、限速编码，尺寸改变时保持输出比例并填边；`stop()` 释放编码器、关闭数值事件文件。默认禁止保存，所以实际用户画面不会进入录制路径。
-
-## 前端：从触点到绿框
-
-`interaction.js` 的 `TargetInteraction` 被两种模式共用：
-
-- `hit(event)` 把触点按画布实际显示尺寸归一化，镜像时再还原横坐标，然后命中检测框。
-- `down()/cancel()` 维护600ms计时与进度环。抬起、移动太远、取消、切镜像或停止视频都会终止手势。
-- `lock()` 发送当前会话、轨迹号和已显示帧号，失败时显示服务端中文提示。异步响应回来后再次核对会话，避免旧响应影响新视频。
-- 页面根据用户看到的是绿框还是普通框发送unlock或lock，而非盲目重复登记；start.js发现旧后端不支持单目标协议时提示重启。
-- `accept(result)` 更新会话、身份条、缩略图和重入提示；`style(box)` 返回白/黄/绿虚线/绿实线样式，绘制模块使用这些样式。
-- `uploadPhoto()` 仅在用户选择文件后上传到同源电脑，结束后清空文件输入；`toggleRecord()` 受禁止保存策略限制。
-
-`app.js` 一次只发送一帧，上一帧未返回就跳过当前发送机会，避免网络队列越来越长。`ipcam.js` 每显示完一帧才请求下一帧。
-
-`box_smoother.js` 只平滑显示坐标；当前人数、分数和身份状态仍来自服务器，不会补造一个“更高的概率”。
-
-`sw.js` 只缓存界面、脚本和图标。离线打开后如果无法连接电脑，start.js保持开始按钮禁用，不会假装离线也能运行模型。
-
-## 脚本与参数
-
-实验版阅读补充：`hybrid_session.py`把身份重新确认与连续跟踪分开；`faces.py`输出人脸质量和专用特征，`person_features.py`输出行人特征，`onnx_backend.py`在不改权重的前提下规范导出元信息并报告实际后端。仅当`identity_mode=hybrid`时由pipeline接入。详细数据流、入口与验收步骤见tracking_upgrade.md。
-
-- `calibrate_reid.py`：输入同人/异人图片对，输出相似度、TAR/FAR、CSV和分布图；公开增强模式仅诊断，不自动改门槛。
-- `bench.py`：输入本地模型/尺寸/设备组合，预热后同步测检测器FPS，不包括网络或ReID。
-- `verify_stream.py`：用公开样例合成视频验证真实浏览器/后端，输出帧数、在途上限、内存采样和释放结论，权限始终拒绝。
-- `package_source.py`：白名单收集源码、必要模型和明确公开样例，输出ZIP和SHA256清单，排除实拍、证书和环境。
-- `verify_package.py`：检查ZIP路径和文件摘要，在独立解压目录启动服务并用公开图检测/锁定，使用现有环境，不冒充全新电脑安装。
-- `analyze_tracking.py`：读取匿名TRACK_DIAG文字，按会话别名、轨迹号和帧号还原操作；输出原因计数与“锁定成功后核验拒绝”的链路，不读取媒体或调整门槛。`gallery.assess`提供数值与拒绝原因，`session.diagnostic`只记录必要状态变化；手势枚举由schemas检查，通过main的受限接口关联到同一会话。
-
-可以安全调整的常见参数见README。检测门槛与重识别门槛是不同含义：前者判断“像不像人”，后者判断“外观像不像已登记目标”，不能混用。
+阅读顺序：`run.py` → `main.py` → `pipeline.py` → `hybrid_session.py` → 编码器与对应测试。

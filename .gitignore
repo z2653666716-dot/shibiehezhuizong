@@ -11,3 +11,11 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# 本机编辑器设置、工作记录和原始课程资料不属于公开项目文档。
+.vscode/
+/AGENTS.md
+/PROGRESS.md
+/docs/branch_testing.md
+/docs/delivery_guide.md
+/docs/ViTrack-视觉目标检测与跟踪-实施方案.md
