@@ -71,7 +71,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_identity.p
 
 本次主要阅读位置：`interaction.js`的`beginPhotoSelection`先记录选照状态，`uploadPhoto`接收文件并等待真实接口结果；`app.js`的`handleVisibility`根据页面隐藏/显示决定暂停或恢复；`camera.js`的`pauseCapture/resumeCapture`只操作当前仍有效的视频轨道。停止时取消在途上传，旧请求不能覆盖后来会话的界面。
 
-`PHOTO_PICKER_TIMEOUT_MS=60000`是相册等待上限，上传请求另有30秒上限。延长前者会让后台内存会话保留更久，不会提高识别成功率；保持默认即可。选择JPEG或PNG照片，文件小于6MiB。网页刷新即可取得这次前端修复，不必重新加载后端模型。仍需安卓真机复测，隔离浏览器的生命周期模拟不能保证每一种手机相册都相同。
+`PHOTO_PICKER_TIMEOUT_MS=60000`是相册等待上限，上传请求另有30秒上限。延长前者会让后台内存会话保留更久，不会提高识别成功率；保持默认即可。选择JPEG或PNG照片，文件小于6MiB。网页刷新即可取得这次前端修复，不必重新加载后端模型。
+
+2026-10-19用户已完成本次安卓复测，文字确认“登记成功，入镜后自动变绿”，并确认“已停止，摄像头提示已结束”。因此照片选择、登记、首次自动匹配与停止释放这条路径已有一次现场通过记录；本次未报告识别耗时、侧脸/姿态/远近表现或其他手机兼容性，不扩大验收结论。
 
 ## 参数与限制
 
