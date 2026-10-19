@@ -25,6 +25,10 @@ def hybrid_viewer(monkeypatch, request):
 def test_real_photo_page_can_register_face_portrait(hybrid_viewer, tmp_path):
     """真实API登记脸部特写→缩略图→同一公开人物变绿；960只让公开图脸像素充足，不改生产默认640。"""
     browser, _ = hybrid_viewer
+    assert browser.evaluate("""(async()=>{
+      const health=await(await fetch('/api/health')).json();
+      return document.getElementById('app-version').textContent.includes(health.version);
+    })()""")
     assert "支持清晰单人人脸照" in browser.evaluate("document.querySelector('.photo-hint').textContent")
     image = cv2.imread(str(PROJECT_ROOT / "data/samples/test.jpg"))
     faces = [face for face in FaceEncoder(AppConfig(det_device="cpu")).read(image) if face.feature is not None]

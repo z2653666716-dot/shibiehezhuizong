@@ -41,6 +41,9 @@ export async function initializePage() {
       throw error;
     }
     document.getElementById("health-status").textContent = "服务就绪";
+    // 显示实际响应的后端版本；切换Git分支后，旧进程仍可能运行，不能只凭网址判断版本。
+    const versionLabel = document.getElementById("app-version");
+    if (versionLabel) versionLabel.textContent = "运行版本：" + health.version;
     document.getElementById("device-name").textContent = health.device_name || "未知设备";
     document.getElementById("model-name").textContent = health.model || "未知模型";
     document.getElementById("source-name").textContent =

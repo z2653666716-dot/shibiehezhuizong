@@ -87,18 +87,69 @@ class FaceEncoder:
 
     @staticmethod
     def associate(faces, boxes, width, height):
-        """将脸分给唯一包含其中心的上半身框；两个人框都包含同一张脸时不给任何人身份依据。"""
-        assigned = {}
-        for face in faces:
+        """按一张脸对应一个人进行几何归属，输出轨迹号到脸的字典；不使用身份相似度猜归属。
+
+        人物框交叠时，某张脸可能同时落入两个框；若另一张脸只可能属于其中一人，
+        整组的一对一约束就能排除错误归属。只有所有可行分配都一致的边才可使用。
+        """
+        candidates, owner_faces = {}, {}
+        for index, face in enumerate(faces):
             center_x = (face.xyxy[0] + face.xyxy[2]) / (2 * width)
             center_y = (face.xyxy[1] + face.xyxy[3]) / (2 * height)
-            owners = [box for box in boxes if box.cls == 0
+            owners = {owner for owner, box in enumerate(boxes) if box.cls == 0
                       and box.xyxy[0] <= center_x <= box.xyxy[2]
-                      and box.xyxy[1] <= center_y <= box.xyxy[1] + .8 * (box.xyxy[3] - box.xyxy[1])]
-            # 刚进入画面的白框可能尚无轨迹号，也必须计入歧义，不能把它的脸分给旧目标。
-            if len(owners) == 1 and owners[0].track_id is not None:
-                key = owners[0].track_id
-                if key not in assigned or (face.xyxy[2] - face.xyxy[0]) * (face.xyxy[3] - face.xyxy[1]) > (
-                        assigned[key].xyxy[2] - assigned[key].xyxy[0]) * (assigned[key].xyxy[3] - assigned[key].xyxy[1]):
-                    assigned[key] = face
+                      and box.xyxy[1] <= center_y <= box.xyxy[1] + .8 * (box.xyxy[3] - box.xyxy[1])}
+            if owners:
+                candidates[index] = owners
+                for owner in owners:
+                    owner_faces.setdefault(owner, set()).add(index)
+
+        assigned, visited = {}, set()
+        for start in candidates:
+            if start in visited:
+                continue
+            # 只把互相有关的人脸/身体放在同一组，远处无关的一张脸不会阻碍这组的分配。
+            group, owners, pending = set(), set(), [start]
+            while pending:
+                index = pending.pop()
+                if index in group:
+                    continue
+                group.add(index)
+                for owner in candidates[index]:
+                    owners.add(owner)
+                    pending.extend(owner_faces[owner] - group)
+            visited.update(group)
+            if len(group) > len(owners):
+                continue  # 一个身体里挤了两张脸等情况，不选最大脸来冒认。
+
+            def match_without(excluded=None):
+                """给本组全部脸找不冲突的位置；可禁止一条边，输出分配或None。
+
+                递归只是在数字编号间调整已占用位置，不读取图像；每次访问新身体编号，必然结束。
+                """
+                occupied = {}
+
+                def place(index, seen):
+                    """当前身体已被占用时，尝试给原来的脸找另一个位置，避免依赖数组顺序。"""
+                    for owner in sorted(candidates[index]):
+                        if owner in seen or excluded == (index, owner):
+                            continue
+                        seen.add(owner)
+                        if owner not in occupied or place(occupied[owner], seen):
+                            occupied[owner] = index
+                            return True
+                    return False
+
+                for index in sorted(group, key=lambda item: len(candidates[item])):
+                    if not place(index, set()):
+                        return None
+                return occupied
+
+            matched = match_without()
+            if matched is None:
+                continue
+            for owner, index in matched.items():
+                # 删掉这条归属仍能排完所有脸，说明存在另一种解释；此时宁可不使用这张脸。
+                if match_without((index, owner)) is None and boxes[owner].track_id is not None:
+                    assigned[boxes[owner].track_id] = faces[index]
         return assigned

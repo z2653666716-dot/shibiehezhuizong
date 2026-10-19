@@ -214,7 +214,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             logger.info("服务结束 processed_frames=%s", pipeline.processed_frames)
             # 文件处理器留至进程退出时由 logging 关闭，保留尚在收尾的后台错误。
 
-    application = FastAPI(title="ViTrack", version="0.3.1-experimental", lifespan=lifespan)
+    application = FastAPI(title="ViTrack", version="0.3.2-face-association", lifespan=lifespan)
     application.state.ready = False
     application.state.pipeline = None
     application.state.settings = None
@@ -501,6 +501,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                          "continuity_grace_seconds": settings.identity_hold_seconds,
                          "confirmation": {"required_positive_frames": settings.reid_confirm_frames,
                                           "max_consecutive_gaps": 2 if settings.identity_mode == "hybrid" else 0,
+                                          "face_assignment": "unique_one_to_one" if settings.identity_mode == "hybrid" else None,
                                           "bounded_evidence_window": settings.identity_mode == "hybrid"},
                          "encoder_device": {
                              "body": getattr(getattr(pipeline.extractor, "person_encoder", None), "execution_device", None),
