@@ -29,6 +29,9 @@ class HybridObservation(Observation):
     motion_ok: bool = False
     face_learning: int = 0
     diagnostic_frame: int = -30
+    candidate_start_frame: int = 0
+    candidate_last_positive: float = 0.
+    candidate_gaps: int = 0
 
 
 class HybridSession(VideoSession):
@@ -43,7 +46,7 @@ class HybridSession(VideoSession):
         self.head_only_ids = set()
         self.diagnostic("hybrid_policy", face_match=config.face_match_threshold, face_reject=config.face_reject_threshold,
                         body_match=config.body_match_threshold, body_hold=config.body_hold_threshold,
-                        grace_seconds=config.identity_hold_seconds, face_interval=3)
+                        grace_seconds=config.identity_hold_seconds, face_interval=3, candidate_gap_frames=2)
 
     def prepare_frame(self, frame, detections):
         """全帧只检测一次人脸；近距离只见脸、YOLO未给人物框时，补充明确标为person-face的观测。"""
@@ -107,7 +110,7 @@ class HybridSession(VideoSession):
             if continuing and track.motion_ok and not crowded:
                 if track_id in self.head_only_ids and sample.reason == "FACE_PROFILE":
                     mode, reason = "continuity", "CONTINUOUS_PROFILE_TRACK"
-                elif body_score >= self.config.body_hold_threshold and monotonic() - track.last_verified <= self.config.identity_hold_seconds:
+                elif (track_id in self.head_only_ids or body_score >= self.config.body_hold_threshold) and monotonic() - track.last_verified <= self.config.identity_hold_seconds:
                     mode, reason = "continuity", "SHORT_FACE_UNCERTAINTY"
         elif continuing and track.motion_ok and not crowded:
             if (track_id in self.head_only_ids and templates and sample is not None
@@ -161,6 +164,54 @@ class HybridSession(VideoSession):
         else:
             track.face_learning = 0
 
+    def reset_candidate(self, track_id, reason):
+        """清除某轨迹的确认进度并记下原因；不删除已经登记的人脸/身体模板。"""
+        track = self.observations[track_id]
+        if track.candidate is not None:
+            self.diagnostic("candidate_reset", track_id=track_id, reason=reason, hits=track.candidate_hits,
+                            gaps=track.candidate_gaps)
+        track.candidate, track.candidate_hits = None, 0
+        track.candidate_start_frame, track.candidate_last_positive, track.candidate_gaps = 0, 0., 0
+
+    def progress_candidate(self, track_id, identity_id, check, allow_gap=False):
+        """输入本帧真实匹配结果，输出是否继续显示候选；短缺失只保留进度，绝不增加成功次数。
+
+        process先完成全局候选竞争再调用。最多容忍连续两帧中性缺失，且仍受最近证据时间、
+        总确认窗口和运动连续性约束；明确异人脸、跨人歧义或另一候选胜出会直接清零。
+        """
+        track, now = self.observations[track_id], monotonic()
+        window = max(self.config.reid_confirm_frames * 2, self.config.reid_confirm_frames + 2)
+        if track.candidate is not None and self.frame_count - track.candidate_start_frame >= window:
+            self.reset_candidate(track_id, "CONFIRMATION_WINDOW_EXPIRED")
+        # 只有通过原有人脸/身体门槛的当前帧才能计数，不能用连续运动猜测凑满六次。
+        if check is not None and check["accepted"]:
+            if track.candidate != identity_id:
+                self.reset_candidate(track_id, "CANDIDATE_CHANGED")
+                track.candidate = identity_id
+                track.candidate_start_frame = self.frame_count
+            elif track.candidate_gaps and now - track.candidate_last_positive > self.config.identity_hold_seconds:
+                self.reset_candidate(track_id, "OBSERVATION_GAP_TIMEOUT")
+                track.candidate, track.candidate_start_frame = identity_id, self.frame_count
+            track.candidate_hits += 1
+            track.candidate_last_positive, track.candidate_gaps = now, 0
+            if track.candidate_hits == 1:
+                self.diagnostic("candidate_started", track_id=track_id, identity_id=identity_id,
+                                hits=1, required=self.config.reid_confirm_frames)
+            return True
+        if allow_gap and track.candidate == identity_id:
+            track.candidate_gaps += 1
+            if (track.candidate_gaps <= 2 and
+                    now - track.candidate_last_positive <= self.config.identity_hold_seconds):
+                if track.candidate_gaps == 1:
+                    self.diagnostic("candidate_waiting", track_id=track_id, hits=track.candidate_hits,
+                                    reason=check["reason"], gaps=track.candidate_gaps)
+                return True
+            reason = "OBSERVATION_GAP_LIMIT" if track.candidate_gaps > 2 else "OBSERVATION_GAP_TIMEOUT"
+        else:
+            reason = check["reason"] if check is not None and not check["accepted"] else "CANDIDATE_COMPETITION"
+        self.reset_candidate(track_id, reason)
+        return False
+
     def process(self, frame, seq):
         """按帧提取证据，先验证已有绑定，再为未绑定轨迹竞争同一个目标，最后输出状态。"""
         self.frame, self.seq = frame, seq
@@ -181,7 +232,11 @@ class HybridSession(VideoSession):
             if sample is not None and (sample.xyxy[3] - sample.xyxy[1]) / max((box.xyxy[3] - box.xyxy[1]) * frame.shape[0], 1) > .45:
                 self.head_only_ids.add(box.track_id)
         features = {key: value for key, value in features.items() if key not in self.head_only_ids}
-        crowded = {box.track_id: any(other.track_id != box.track_id and overlap(box.xyxy, other.xyxy) > .15 for other in all_people) for box in people}
+        # 身体框交叠并不必然代表串人：两张脸仍各自唯一归属时，间隔提脸帧也可以连续跟踪。
+        # associate会把同时落在两个人框内的脸排除，无轨迹号的新白框也参与该歧义判断。
+        crowded = {box.track_id: box.track_id not in self.current_faces and
+                   any(other.track_id != box.track_id and overlap(box.xyxy, other.xyxy) > .15 for other in all_people)
+                   for box in people}
         visible = {box.track_id for box in people}
         if visible != self._visible_tracks:
             self.diagnostic("visible_tracks_changed", visible=sorted(visible), missing=sorted(self._visible_tracks - visible))
@@ -201,7 +256,7 @@ class HybridSession(VideoSession):
                     self.diagnostic("identity_unbound", track_id=key, identity_id=track.identity_id, check=check)
                     self.events.append({"type": "event", "name": "unbound", "identity_id": track.identity_id})
                     track.identity_id = None
-                    track.candidate, track.candidate_hits = None, 0
+                    self.reset_candidate(key, check["reason"])
                 else:
                     claimed.add(track.identity_id)
                     checks[key] = check
@@ -210,13 +265,14 @@ class HybridSession(VideoSession):
                         self.diagnostic("identity_kept", track_id=key, identity_id=track.identity_id, check=check)
                         track.diagnostic_frame = self.frame_count
         # 单目标库中只有一个身份；同帧多个可疑人物必须有领先差距，不能按检测顺序抢占。
-        waiting = []
+        waiting, candidate_checks = [], {}
         identity_id = next(iter(self.gallery.items), None)
         if identity_id and identity_id not in claimed:
             for box in people:
                 key, track = box.track_id, self.observations[box.track_id]
                 if track.identity_id is None and track.hits >= 3:
                     check = self.evidence(key, features.get(key), identity_id, crowded[key])
+                    candidate_checks[key] = check
                     if check["accepted"]:
                         waiting.append((check["score"], key, check))
                     else:
@@ -231,8 +287,7 @@ class HybridSession(VideoSession):
             if track is not None and track.identity_id is None:
                 if winner and winner[1] == box.track_id:
                     check = winner[2]
-                    track.candidate_hits = track.candidate_hits + 1 if track.candidate == identity_id else 1
-                    track.candidate = identity_id
+                    self.progress_candidate(box.track_id, identity_id, check)
                     state = "candidate"
                     if track.candidate_hits >= self.config.reid_confirm_frames:
                         for other in self.observations.values():
@@ -244,7 +299,18 @@ class HybridSession(VideoSession):
                         self.events.append({"type": "event", "name": "relocked", "identity_id": identity_id})
                         self.diagnostic("identity_confirmed", track_id=box.track_id, identity_id=identity_id, mode=check["mode"], frames=track.candidate_hits)
                 else:
-                    track.candidate, track.candidate_hits = None, 0
+                    assessment = candidate_checks.get(box.track_id)
+                    if assessment is not None and assessment["accepted"]:
+                        # 单人分数过线不等于全局竞争胜出；并列或落后时不能继续累计成功证据。
+                        assessment = {**assessment, "accepted": False, "reason": "CANDIDATE_COMPETITION"}
+                    # 仅在没有别的可靠候选、没有跨人歧义、运动仍连贯时等待短缺失。
+                    # 多个可靠候选分数相近属于竞争，不是缺帧，不能沿用先前进度强行选人。
+                    neutral = (assessment is not None and assessment["reason"] in
+                               {"NO_RELIABLE_IDENTITY", "FACE_UNCERTAIN"})
+                    allow_gap = (not waiting and identity_id not in claimed and neutral and
+                                 track.motion_ok and not crowded.get(box.track_id, True))
+                    if self.progress_candidate(box.track_id, identity_id, assessment, allow_gap):
+                        state = "candidate"
             output.append(box.model_copy(update={"state": state, "identity_id": track.identity_id if state == "locked" else None,
                 "sim": max(-1., min(1., check["score"])) if check and check["score"] >= 0 else None,
                 "verification": check["mode"] if check else "none"}))

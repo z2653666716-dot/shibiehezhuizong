@@ -29,6 +29,16 @@ tests/test_hybrid_identity.py 合成规则与真实公开样例回归
 
 `verification=face/body/continuity`说明当前依据；`continuity`只表示连续跟踪，人脸此刻尚未重新确认，不是身份认证结论。
 
+## 多人移动时的候选确认
+
+`0.3.1-experimental`修复两处会反复进入“识别中”的状态规则：身体框交叠但两张脸各自唯一归属时，不再仅因身体框相交就阻断连续跟踪；候选确认中间短暂模糊或缺少可用特征时，可以保留已有进度，缺失帧不计入成功次数。仍需取得默认6份可靠匹配证据，每份都通过原门槛，且同帧候选必须有明确领先差距。
+
+`HybridSession.progress_candidate`接收当前匹配结果，负责累计真正成功的帧。默认确认窗口为12个已处理帧，最多连续等待2帧中性缺失，距离最近成功证据还不能超过`IDENTITY_HOLD_SECONDS`；超过任一限制、明确异人脸、脸归属不清或候选竞争时，由`reset_candidate`清空进度。它们由`process`完成当前帧的多人比较后调用。这里的“帧”是电脑实际处理的帧，不是手机相机标称30FPS。
+
+已经确认且只有头部的目标，在同轨迹运动连贯、脸归属明确时，中间人脸分数暂时不够可以短暂维持“跟踪中”，不再要求不存在的身体特征；默认最多2秒，不能无限沿用。可靠正脸明显矛盾仍立即撤绿。脸同时落在多个身体框内时仍等待重新确认，不强行分配给原目标。
+
+上述规则已有合成双人场景和公开样例检查，真实手机“两人同框、轻微移动”仍须复测；并未提高已验证的实际准确率。阅读顺序：先看`process`中的`crowded`与候选竞争，再看`progress_candidate/reset_candidate`，最后看`tests/test_hybrid_candidates.py`。暂时保持确认次数和匹配门槛默认，不通过减少证据来掩盖状态问题。
+
 ## 如何启动
 
 依赖与3份模型已在当前电脑准备；重新解压或换电脑时才需要安装依赖并运行下载脚本：
@@ -42,13 +52,15 @@ tests/test_hybrid_identity.py 合成规则与真实公开样例回归
 
 ```powershell
 # 本机网页：只启动服务，用户手动开启采集
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_identity.ps1 -Mode pc -Port 8445
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_identity.ps1 -Mode pc -Port 8446
 
 # 手机使用电脑热点：先确认热点已开启，手机已连接；证书须包含当前热点IP
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_identity.ps1 -Mode phone -Port 8445 -LanIP 192.168.137.1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_identity.ps1 -Mode phone -Port 8446 -LanIP 192.168.137.1
 ```
 
 手机网址以终端实际输出为准。热点未开启、IP不再属于电脑时启动检查应拒绝；不要用旧IP绕过检查。`-CheckOnly`只校验，不加载模型或打开设备。停止服务按Ctrl+C。
+
+本次多人确认修复的后端版本为`0.3.1-experimental`。如果旧8445服务仍运行，单纯刷新该页面不会替换Python进程中的身份算法；请使用已加载新版本的8446服务，并通过`/api/health`的`version`核对。上述显式端口只用于区分正在运行的版本，不改变相机权限或自动开启检测。
 
 ## 现场验收顺序
 
