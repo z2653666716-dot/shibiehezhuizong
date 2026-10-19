@@ -11,7 +11,7 @@ import re
 
 ROOT = Path(__file__).resolve().parents[1]
 SAFE_FIELDS = {"event", "session", "seq", "track_id", "identity_id", "action", "reason", "code",
-               "client_seq", "frame_age_ms", "ema_score", "frames", "required", "source"}
+               "client_seq", "frame_age_ms", "ema_score", "frames", "required", "source", "hits", "gaps"}
 
 
 def read_events(paths):
@@ -36,7 +36,8 @@ def read_events(paths):
                                       if key in {"accepted", "reason", "score", "anchor_score", "high", "color_min",
                                                  "margin", "appearance_score", "color_score", "nearest_other", "other_margin",
                                                  "best", "second", "body_score", "face_score", "face_quality", "mode",
-                                                 "face_threshold", "body_threshold", "body_hold_threshold"}
+                                                 "face_threshold", "body_threshold", "body_hold_threshold",
+                                                 "other_body_score", "body_unique", "motion_ok", "observation_gap"}
                                       and isinstance(value, (str, int, float, bool, type(None)))}
                 if isinstance(raw.get("client"), dict):
                     event["client"] = {key: value for key, value in raw["client"].items()
@@ -60,8 +61,8 @@ def summarize(events):
             client = event.get("client", {})
             if client.get("event") == "press_cancel":
                 reasons["gesture_" + str(client.get("reason"))] += 1
-        if name in {"lock_rejected", "photo_rejected"}:
-            reasons[str(event.get("code") or event.get("reason"))] += 1
+        if name in {"lock_rejected", "photo_rejected", "candidate_reset", "candidate_rejected"}:
+            reasons[str(event.get("code") or event.get("reason") or event.get("check", {}).get("reason"))] += 1
         if name == "identity_cleared":
             attempts = {key: value for key, value in attempts.items() if key[0] != session}
         if name == "lock_result":
@@ -69,6 +70,9 @@ def summarize(events):
                 attempts[(session, event.get("track_id"))] = event
             else:
                 attempts = {key: value for key, value in attempts.items() if key[0] != session}
+        if name == "identity_confirmed":
+            # 照片自动匹配和手动锁定都可能在后续姿态变化时失效，不能只关联手动请求。
+            attempts[(session, event.get("track_id"))] = event
         if name == "identity_unbound":
             reason = event.get("check", {}).get("reason", "UNKNOWN")
             reasons[reason] += 1
@@ -76,6 +80,7 @@ def summarize(events):
             if locked:
                 failures.append({"session": session, "track_id": event.get("track_id"),
                                  "locked_seq": locked.get("seq"), "rejected_seq": event.get("seq"),
+                                 "binding_event": locked.get("event"),
                                  "reason": reason, "check": event.get("check", {})})
     return {"events": dict(counts), "reasons": dict(reasons), "locked_then_rejected": failures,
             "scope": "diagnostic_events_not_identity_accuracy", "contains_media_or_vectors": False}

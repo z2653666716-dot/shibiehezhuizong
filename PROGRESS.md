@@ -676,6 +676,14 @@
 - 实际命令：pytest tests/test_hybrid_candidates.py tests/test_hybrid_identity.py tests/test_tracker.py --basetemp=work/branches/track -q --disable-warnings --maxfail=1；退出0，22 passed，11.08秒。新增1/2/3帧缺失参数检查，保留真实公开模型缩放与身份取消检查；无物理设备输入。
 - 文档记录当前分支新增函数、输入/输出、依赖和待集中观察项。没有重启旧服务，也不要求用户中途摄像头实测。
 
+## 功能分支C：身体依据等待（0.3.4-body-continuity）
+
+- fix/body-overlap-continuity从B的3b23a6a派生，包含A/B。evidence增加同帧旁人身体比较及当前交叠无可比较人物检查；目标身体可靠、明显领先旁人、原轨迹连贯时，可在脸归属暂不清期间短等，mode=continuity，不刷新last_verified，因此不能无限延长。
+- 未确认新轨迹、同衣着竞争分数相近、没有可比较身体的新白框/头部目标、明确异人脸仍不能使用该例外。current_body_features只是本帧缓存，取消/停止清除，不写入诊断。
+- analyze_tracking.py保留有限分数与运动/缺帧状态，关联identity_confirmed自动绑定后的撤绿，并统计候选重置原因；配套测试验证额外向量字段不被复制到报告。该维护不另开用户汇报轮次。
+- 实际命令：pytest tests/test_hybrid_candidates.py tests/test_hybrid_identity.py tests/test_hybrid_page.py tests/test_tracking_diagnostics.py tests/test_single_target.py --basetemp=work/branches/body -q --disable-warnings --maxfail=1；退出0，28 passed、1 warning，25.68秒。包含真实公开照片页面与两个身体已知向量竞争、等待不延长期限、未知新白框拒绝和取消清理；不含用户实拍。
+- 页面运行版本0.3.4-body-continuity，健康标记body_competition_wait；D的人脸学习修复尚未加入本分支，现场姿态/距离效果留待集中验收。
+
 ## 后续功能待验收
 
 - 源码包首次独立解压运行检查通过：77个清单文件摘要一致，包内YOLO与MobileNet实际加载，公开样例检出4人，锁定接口及绿框状态通过，默认录制拒绝，静态/PWA资源可访问，临时服务已关闭；未使用设备、未保存实拍内容。

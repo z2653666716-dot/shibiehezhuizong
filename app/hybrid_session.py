@@ -44,6 +44,8 @@ class HybridSession(VideoSession):
         super().__init__(config, extractor)
         self.face_encoder = face_encoder
         self.face_templates, self.body_valid, self.current_faces = {}, {}, {}
+        self.current_body_features = {}
+        self.unknown_body_overlap = set()
         self.detected_faces = None
         self.face_only_indices, self.face_only_ids = set(), set()
         self.head_only_ids = set()
@@ -118,6 +120,10 @@ class HybridSession(VideoSession):
         negative = max((cosine(feature[:512], item[:512]) for item in identity.distractors), default=-1.) if feature is not None else -1.
         face_positive = face_score is not None and bool(templates) and face_score >= self.config.face_match_threshold
         body_positive = body_score >= self.config.body_match_threshold and body_score - negative >= self.config.reid_margin
+        other_body = max((self.body_score(value, identity_id) for key, value in self.current_body_features.items()
+                          if key != track_id), default=-1.)
+        body_unique = (body_positive and body_score - other_body >= self.config.reid_margin
+                       and track_id not in self.unknown_body_overlap)
         mode, reason = "none", "NO_RELIABLE_IDENTITY"
         if face_positive:
             mode, reason = "face", "FACE_CONFIRMED"
@@ -131,6 +137,11 @@ class HybridSession(VideoSession):
                     mode, reason = "continuity", "CONTINUOUS_PROFILE_TRACK"
                 elif (track_id in self.head_only_ids or body_score >= self.config.body_hold_threshold) and monotonic() - track.last_verified <= self.config.identity_hold_seconds:
                     mode, reason = "continuity", "SHORT_FACE_UNCERTAINTY"
+        elif (continuing and track.motion_ok and crowded and body_unique and
+              monotonic() - track.last_verified <= self.config.identity_hold_seconds):
+            # 人脸归属不清时不强行借用另一张脸；原轨迹的身体还明显领先旁人，只允许有限等待。
+            # continuity不会刷新last_verified，因此不能靠同一份身体依据无限延长遮挡等待。
+            mode, reason = "continuity", "SHORT_UNIQUE_BODY_OVERLAP"
         elif continuing and track.motion_ok and not crowded:
             if (track_id in self.head_only_ids and templates and sample is not None
                     and sample.reason in {"FACE_EXTREME_ANGLE", "FACE_OBSERVATION_INTERVAL"}):
@@ -152,6 +163,7 @@ class HybridSession(VideoSession):
                 "face_quality": sample.reason if sample is not None else "NO_FACE",
                 "face_threshold": self.config.face_match_threshold, "body_threshold": self.config.body_match_threshold,
                 "body_hold_threshold": self.config.body_hold_threshold,
+                "other_body_score": round(other_body, 4), "body_unique": bool(body_unique),
                 "motion_ok": bool(track.motion_ok), "observation_gap": track.observation_gap,
                 "score": face_score if mode == "face" else body_score}
 
@@ -254,6 +266,11 @@ class HybridSession(VideoSession):
             if sample is not None and (sample.xyxy[3] - sample.xyxy[1]) / max((box.xyxy[3] - box.xyxy[1]) * frame.shape[0], 1) > .45:
                 self.head_only_ids.add(box.track_id)
         features = {key: value for key, value in features.items() if key not in self.head_only_ids}
+        self.current_body_features = features
+        # 新白框或仅头部的人没有可比较的身体向量；不能因为“没分数”就宣称目标胜过了他。
+        self.unknown_body_overlap = {box.track_id for box in people if any(
+            other is not box and other.track_id not in features and overlap(box.xyxy, other.xyxy) > .15
+            for other in all_people)}
         # 身体框交叠并不必然代表串人：两张脸仍各自唯一归属时，间隔提脸帧也可以连续跟踪。
         # associate会把同时落在两个人框内的脸排除，无轨迹号的新白框也参与该歧义判断。
         crowded = {box.track_id: box.track_id not in self.current_faces and
@@ -327,10 +344,12 @@ class HybridSession(VideoSession):
                         assessment = {**assessment, "accepted": False, "reason": "CANDIDATE_COMPETITION"}
                     # 仅在没有别的可靠候选、没有跨人歧义、运动仍连贯时等待短缺失。
                     # 多个可靠候选分数相近属于竞争，不是缺帧，不能沿用先前进度强行选人。
+                    unique_body_gap = bool(assessment and assessment.get("body_unique") and
+                                           assessment["reason"] == "AMBIGUOUS_OVERLAP")
                     neutral = (assessment is not None and assessment["reason"] in
-                               {"NO_RELIABLE_IDENTITY", "FACE_UNCERTAIN"})
+                               {"NO_RELIABLE_IDENTITY", "FACE_UNCERTAIN"}) or unique_body_gap
                     allow_gap = (not waiting and identity_id not in claimed and neutral and
-                                 track.motion_ok and not crowded.get(box.track_id, True))
+                                 track.motion_ok and (not crowded.get(box.track_id, True) or unique_body_gap))
                     if self.progress_candidate(box.track_id, identity_id, assessment, allow_gap):
                         state = "candidate"
             output.append(box.model_copy(update={"state": state, "identity_id": track.identity_id if state == "locked" else None,
@@ -374,6 +393,8 @@ class HybridSession(VideoSession):
         super().clear_lock(reason)
         self.face_templates.clear()
         self.body_valid.clear()
+        self.current_body_features.clear()
+        self.unknown_body_overlap.clear()
 
     def delete(self, identity_id):
         super().delete(identity_id)
@@ -385,6 +406,8 @@ class HybridSession(VideoSession):
         self.face_templates.clear()
         self.body_valid.clear()
         self.current_faces.clear()
+        self.current_body_features.clear()
+        self.unknown_body_overlap.clear()
         self.detected_faces = None
         self.face_only_ids.clear()
         self.head_only_ids.clear()

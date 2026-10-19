@@ -82,3 +82,24 @@ def test_diagnostic_endpoint_restricts_content_and_session(service, records):
         assert tracker.token not in json.dumps(records)
         assert client.get("/api/health").json()["diagnostics"]["identity_rejection_reasons"] is True
         assert logging.getLogger("uvicorn.access").disabled  # 原始查询凭据不能被重复访问行打印。
+
+
+def test_analysis_covers_photo_auto_confirmation_and_candidate_resets(tmp_path):
+    """匿名自动匹配后撤绿也要关联；保留计数和当前身体竞争数字，拒绝复制额外向量字段。"""
+    events = [
+        {"event": "identity_confirmed", "session": "a" * 12, "seq": 10, "track_id": 2, "identity_id": "ID-01"},
+        {"event": "identity_unbound", "session": "a" * 12, "seq": 11, "track_id": 2,
+         "check": {"reason": "AMBIGUOUS_OVERLAP", "body_unique": False, "other_body_score": .95,
+                   "motion_ok": True, "observation_gap": 1, "feature": [1., 0.]}},
+        {"event": "candidate_reset", "session": "a" * 12, "seq": 15, "track_id": 2,
+         "reason": "OBSERVATION_GAP_LIMIT", "hits": 4, "gaps": 3},
+    ]
+    path = tmp_path / "automatic_diagnostics.log"
+    path.write_text("\n".join("TRACK_DIAG " + json.dumps(item) for item in events), encoding="utf-8")
+    safe = read_events([path])
+    assert "feature" not in safe[1]["check"]
+    assert safe[1]["check"]["observation_gap"] == 1
+    assert safe[2]["hits"] == 4 and safe[2]["gaps"] == 3
+    report = summarize(safe)
+    assert report["locked_then_rejected"][0]["binding_event"] == "identity_confirmed"
+    assert report["reasons"]["OBSERVATION_GAP_LIMIT"] == 1

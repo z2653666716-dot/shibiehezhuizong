@@ -160,3 +160,31 @@ def test_brief_missing_track_keeps_only_recent_actual_confirmation(missing_count
         assert any(box.track_id == target and box.state == "locked" for box in result)
     else:
         assert all(box.state != "locked" for box in result)
+
+
+class DistinctBodies:
+    """用合成图蓝/红区域区分两个已知身体向量，验证当前身体竞争，不代表视觉准确率。"""
+    def extract(self, crops, flip=False):
+        return [body_vector(1. if crop[:, :, 0].mean() > crop[:, :, 2].mean() else .1) for crop in crops]
+
+
+def test_unique_body_can_wait_briefly_during_face_overlap(monkeypatch):
+    """脸归属暂时歧义，但运动连贯、身体明显领先旁人时可短等；不得靠身体无限延长。"""
+    session = HybridSession(config(), DistinctBodies(), TwoFaces())
+    frame = np.full((160, 320, 3), 100, np.uint8)
+    frame[:, :100], frame[:, 140:] = (200, 40, 20), (20, 40, 200)
+    for seq in range(1, 7):
+        advance(session, frame, seq)
+    target = session.boxes[0].track_id
+    session.lock(target, session.seq, "lock")
+    verified = session.observations[target].last_verified
+    # 两张脸都落在两个身体框的交叠区：归属确实有歧义，不能直接把其中任一脸分给目标。
+    monkeypatch.setattr(session.face_encoder, "read", lambda frame, recognize=True: [
+        FaceSample((105, 15, 125, 45), normalize([1., 0.]), "READY", .99),
+        FaceSample((115, 15, 135, 45), normalize([0., 1.]), "READY", .99),
+    ])
+    result = advance(session, frame, 7)
+    assert next(box for box in result if box.track_id == target).state == "locked"
+    assert session.observations[target].last_verified == verified
+    monkeypatch.setattr("app.hybrid_session.monotonic", lambda: verified + 3)
+    assert all(box.state != "locked" for box in advance(session, frame, 8))
