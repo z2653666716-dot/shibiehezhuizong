@@ -16,6 +16,14 @@
 
 ## 启动当前已测试的新功能
 
+课堂演示推荐直接在编辑器中打开项目根目录的 **`run.py`**，点击右上角“运行Python文件”的三角按钮。先开启电脑移动热点并让手机连接，再点击运行；不用手动激活Conda或输入PowerShell。入口会自动选择`envs/vitrack/python.exe`，检查热点、证书、模型与8450端口，启动同一套hybrid方法。
+
+等待终端出现`Application startup complete`，手机打开`https://192.168.137.1:8450`，确认页面版本为`0.3.6-distance-reentry`，再由用户手动开始并授权相机。结束时先在手机停止检测，再在运行终端按Ctrl+C关闭服务。运行按钮针对当前打开的文件，请打开`run.py`，不要直接运行`app/config.py`或`app/main.py`。
+
+`run.py`顶部`PORT`可调整监听端口，手机网址需同步变化；`PHONE_IP`对应电脑热点地址，修改后证书也必须包含新地址。默认使用已测试的8450与192.168.137.1即可。`--check`是开发检查选项，只验证启动条件，不启动服务。入口不自动打开浏览器、相机或IP Webcam，热点关闭、模型缺失或端口占用会给出中文提示。
+
+原命令行方式仍可使用：
+
 本机已有环境、模型和热点证书时，在项目根目录执行：
 
 ```powershell
@@ -85,6 +93,7 @@ powershell.exe -NoProfile -File .\scripts\run.ps1 -Mode pc
 ## 项目结构与阅读顺序
 
 ```text
+run.py              # 编辑器运行按钮的一键手机演示入口，自动使用项目Python
 app/
   main.py           # 后端入口app.main:app，启停与路由
   config.py         # 配置读取和检查

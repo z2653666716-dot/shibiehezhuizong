@@ -26,7 +26,7 @@ def collect_files(root=ROOT):
                     and path.resolve().is_relative_to(directory.resolve())
                     and "__pycache__" not in path.parts):
                 files.add(path)
-    named = ["README.md", "PROGRESS.md", "AGENTS.md", ".gitignore", ".env.example", "requirements.txt", "requirements.lock.txt",
+    named = ["run.py", "README.md", "PROGRESS.md", "AGENTS.md", ".gitignore", ".env.example", "requirements.txt", "requirements.lock.txt",
              "web/icons/icon-192.png", "web/icons/icon-512.png",
              "weights/yolo11n.pt", "weights/mobilenet_v3_small-047dcff4.pth", "weights/yolo11s.pt",
              "weights/osnet_x0_25_msmt17.onnx", "weights/face_detection_yunet_2023mar.onnx",

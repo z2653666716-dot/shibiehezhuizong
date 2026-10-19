@@ -7,6 +7,7 @@
 ## 当前状态
 
 - 日期：2026-10-19。
+- 新增run.py一键手机演示入口：用户可打开该文件点击编辑器运行按钮，自动使用项目Python、沿用hybrid参数、检查热点/证书/模型/端口并启动HTTPS。算法和匹配门槛不变，摄像头仍需手机手动开始；说明见README及delivery_guide。
 - 当前收尾基线：用户要求新建baseline分支收拢已测试功能，已从fix/distance-reentry的2c2f82c建立baseline/tested-v0.3.6，运行版本仍为0.3.6-distance-reentry。完整包含A/B/C/D及距离重入修复；保留原baseline/user-tested-v0.3.1、各功能分支和main。本次只更新文档/协作约定，不修改软件代码或匹配参数；固定标签v0.3.6-tested-baseline用于保留整合快照。
 - 最新集中测试：A/B文字反馈良好；C提示被用户明确更正为“跟踪中”，不记为反复识别中；D存在远处登记后近处重入失败，近处登记正常。修复分支fix/distance-reentry（从D的23f9647派生），版本0.3.6-distance-reentry，在单独取得最多5分钟授权后完成现场复测，用户确认“测试完成没有上一版的问题了”，并确认停止、摄像头提示结束。仅记本轮场景通过，不扩大为全部身份效果验收；main未合并。
 - 用户指定开发基线：原8446的0.3.1-experimental，提交2b6ea26，固定于baseline/user-tested-v0.3.1和v0.3.1-user-baseline。后续按功能依次派生分支、连续自动检查；用户最后集中现场验收，再决定合并。各版本关系和启动方法见docs/branch_testing.md。
@@ -32,6 +33,14 @@
 - 新基线仅同步AGENTS、README、branch_testing、delivery_guide和本进度说明；统一hybrid启动入口，纠正旧文档“尚不支持人脸特写”等过期说法。app/web/tests/scripts保持2c2f82c的软件内容；91项自动检查和本轮有限现场反馈沿用原始记录，不宣称又运行了一次全套测试。
 - 实际核对：git diff --exit-code 2c2f82c -- app web tests scripts requirements.txt .env.example返回0，软件内容无差异；git diff --check通过；run_identity.ps1 -Mode pc -Port 8450 -CheckOnly返回ok=True、source=ws。只检查启动计划，未启动服务或访问摄像头。
 - 下一步收尾范围：把交付工具分支已验证的hybrid模型/版本清单改进带到新基线，再生成0.3.6源码包并独立解压验收。既有0.3.5源码包不包含最新修复；论文/报告/最终实拍视频等仍按原方案人工范围准备，不能把分支建立当作全部课程材料已交付。
+
+## Python一键启动入口
+
+- 新增根目录run.py，只有标准库的外层先检查项目解释器；编辑器误选全局Python时以参数列表调用项目解释器，第三方依赖在转交后导入。prepare_server复用配置和证书函数，默认PHONE_IP=192.168.137.1、PORT=8450，SOURCE=ws、hybrid、OSNet、BoT-SORT、禁止媒体保存；不修改.env或系统环境，不自动打开网页或设备。
+- Windows端口检查测试发现不同地址可能允许重复绑定同一端口，入口已设置SO_EXCLUSIVEADDRUSE，确认回环已有服务时拒绝启动，不结束已有程序。首次全局Python检查出现转交前中文乱码，入口统一本进程UTF-8后重测正常。
+- package_source.py白名单收入run.py，避免后续源码包漏掉新入口；test_package同步边界检查。新增test_launcher检查配置副本隔离、热点未开与已有端口拒绝。实际命令pytest tests/test_launcher.py tests/test_package.py --basetemp=work/branches/python_launcher_checked -q --disable-warnings --maxfail=1，4 passed，0.36秒。
+- 从E:/course_task目录使用C:/Users/mi/miniconda3/python.exe运行项目run.py --check，退出0，输出项目解释器E:/course_task/homework3/envs/vitrack/python.exe及正确手机地址，未启动服务。未向全局环境安装依赖；只做针对入口的检查，不重复运行身份算法全套回归。
+- 实际HTTPS启动检查通过：运行run.py后读取回环/api/health，version=0.3.6-distance-reentry、identity.mode=hybrid、source=ws、recording.allowed=false、processed_frames=0；临时测试进程已停止。未访问相机、未发送帧，未新增用户媒体；README/delivery_guide已给出编辑器运行与停止步骤。
 
 ## 已完成：保存项目规则
 
