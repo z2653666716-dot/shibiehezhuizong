@@ -49,9 +49,14 @@ def viewer(sample_stream, tmp_path, request):
     server = browser = session = None
     with (tmp_path / "service.txt").open("w", encoding="utf-8") as output:
         try:
+            # 测试自己的文件记录放在临时诊断目录，避免模拟错误与正式运行记录混在一起。
+            server_code = (
+                "import sys\nfrom pathlib import Path\nimport uvicorn\nimport app.main as service\n"
+                "service.LOG_DIR=Path(sys.argv[2])\n"
+                "uvicorn.run(service.app,host='127.0.0.1',port=int(sys.argv[1]),workers=1)\n"
+            )
             server = subprocess.Popen(
-                [sys.executable, "-X", "utf8", "-m", "uvicorn", "app.main:app",
-                 "--host", "127.0.0.1", "--port", str(port), "--workers", "1"],
+                [sys.executable, "-X", "utf8", "-c", server_code, str(port), str(tmp_path / "diagnostics")],
                 cwd=PROJECT_ROOT, env=environment, stdout=output, stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
@@ -68,6 +73,7 @@ def viewer(sample_stream, tmp_path, request):
                     if time.monotonic() > deadline:
                         raise TimeoutError("test service not ready")
                     time.sleep(0.1)
+            assert (tmp_path / "diagnostics/app.log").is_file()
             profile_dir = tmp_path / "edge_profile"
             browser = subprocess.Popen(
                 [str(DEFAULT_BROWSER), "--headless=new", "--disable-gpu", "--no-first-run",

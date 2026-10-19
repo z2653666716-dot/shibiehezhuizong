@@ -693,6 +693,16 @@
 - 拆分后的faces.py、hybrid_session.py、候选测试、数值分析与诊断测试均以语法树对比拆分前已检查源码，一致。分支版本改为0.3.5-face-enrollment，页面显示实际后端版本；旧8446保持用户指定基线进程，不声称已升级。
 - A/B/C/D的依赖、输入输出、阅读顺序、参数和最后统一测试项目已写入docs/branch_testing.md与tracking_upgrade.md。用户要求中间无需干预，因此不再发起摄像头复测；真实姿态/远近、重入、交叉及准确率继续待集中验收。
 
+## 交付分支：版本清单与源码包（chore/feature-delivery）
+
+- 从D的23f9647派生，包含A/B/C/D全部功能，运行版本仍为0.3.5-face-enrollment；新增打包与文档配套，不另称一种识别算法。main和用户指定的0.3.1基线分支/标签均保留，现场验收前不自动合并。
+- package_source.py新增source_version，只解析FastAPI版本与当前根仓库的分支/提交/未提交状态，不导入模型或读取.env；嵌套在原仓库work中的解压目录不会误用外层Git信息。--identity-mode hybrid要求三份额外模型齐全，清单与报告记录身份模式及版本。
+- verify_package.py校验所选模式与清单一致，并核对独立启动后的真实版本；继续做摘要、真实模型、公开样例、锁定与默认禁止录制检查，不把现有环境复用当成全新电脑安装。
+- tests/test_package.py新增缺少hybrid模型时拒绝打包、补齐后清单版本/模式正确与外层Git不误用检查。隔离浏览器fixture将模拟记录保存到自己的临时诊断目录，不混正式运行记录，权限仍denied。
+- 实际命令：pytest tests/test_package.py tests/test_hybrid_page.py tests/test_photo_picker.py tests/test_ipcam_page.py tests/test_pwa.py --basetemp=work/branches/delivery -q --disable-warnings --maxfail=1；退出0，9 passed、3 warnings，100.57秒。此前D完整回归87项通过，交付分支未改身份算法；没有新增真实设备测试。
+- README、delivery_guide、code_guide及branch_testing同步当前hybrid能力、单目标规则、照片特写支持、功能依赖、真实后端版本显示与集中启动方式，区分appearance旧规则与hybrid新规则。源码ZIP只包含当前完整代码，不携带所有分支Git历史，所有分支从GitHub获取。
+- 源码包及独立解压运行结果将在outputs/delivery单独保留；它们只含源码、允许分发模型与指定公开样例，排除环境、私有证书、.env、work/备份、运行结果和实拍内容。论文/报告正文、最终实拍视频与真实课程资料仍按原方案人工范围准备。
+
 ## 后续功能待验收
 
 - 源码包首次独立解压运行检查通过：77个清单文件摘要一致，包内YOLO与MobileNet实际加载，公开样例检出4人，锁定接口及绿框状态通过，默认录制拒绝，静态/PWA资源可访问，临时服务已关闭；未使用设备、未保存实拍内容。

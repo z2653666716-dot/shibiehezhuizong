@@ -35,6 +35,8 @@ def verify(archive_path, report_path, identity_mode="appearance"):
         archive.extractall(directory)
     source = directory / "vitrack"
     manifest = json.loads((source / "SOURCE_MANIFEST.json").read_text(encoding="utf-8"))
+    if manifest.get("identity_mode", identity_mode) != identity_mode:
+        raise ValueError("验收身份模式与源码包清单不符，请按清单指定的模式运行")
     for item in manifest["files"]:
         path = (source / item["path"]).resolve()
         if not path.is_relative_to(source.resolve()) or hashlib.sha256(path.read_bytes()).hexdigest() != item["sha256"]:
@@ -55,6 +57,7 @@ def verify(archive_path, report_path, identity_mode="appearance"):
               "fresh_dependency_installation_performed": False, "physical_camera_access": False,
               "user_media_saved": False, "extracted_directory": str(source)}
     report["identity_mode"] = identity_mode
+    report["source"] = manifest.get("source", {})
     try:
         with (directory / "service.txt").open("w", encoding="utf-8") as output:
             server = subprocess.Popen([sys.executable, "-X", "utf8", "-m", "uvicorn", "app.main:app",
@@ -77,6 +80,10 @@ def verify(archive_path, report_path, identity_mode="appearance"):
                     time.sleep(.2)
                 assert health["source"] == "ws" and health["recording"]["allowed"] is False
                 assert health["identity"]["mode"] == identity_mode
+                expected_version = manifest.get("source", {}).get("runtime_version")
+                if expected_version is not None:
+                    assert health["version"] == expected_version
+                report["runtime_version"] = health["version"]
                 assert health["processed_frames"] == 0
                 for route in ("/pc", "/static/manifest.webmanifest", "/sw.js", "/static/icons/icon-512.png"):
                     assert client.get(route).status_code == 200

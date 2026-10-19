@@ -34,7 +34,17 @@ Pydantic模型拒绝无效数字、错误字段和不一致状态。例如绿框
 - `smooth(old,new)`：EMA特征平滑。0.9意味着保留旧特征的90%，加入新特征的10%，然后重新归一化。
 - `normalize()/cosine()`：把向量长度变为1，再求点积得到相似度。平方根融合权重使点积对应外观/颜色的加权余弦。
 
-权重缺失会报错，不会临时下载或用随机模型冒充。纯颜色后端必须通过配置明确选择。可选OSNet没有安装，选择它会明确提示，不静默替换技术栈。
+权重缺失会报错，不会临时下载或用随机模型冒充。纯颜色后端必须明确选择。实验分支已接入本地OSNet，输出512维行人特征；`onnx_backend.py`只在内存规范旧图元信息，保留权重原文件摘要，实际执行设备通过健康接口显示。
+
+## 实验身份保持：hybrid_session.py与faces.py
+
+`Pipeline`按显式`IDENTITY_MODE=hybrid`创建`HybridSession`，共用YOLO检测，再让BoT-SORT关联位置。`FaceEncoder.read`接收BGR图像，输出脸位置、质量原因和可选SFace特征；`associate`在整组脸/身体框上求一对一可行归属，只使用所有可行解释都一致的关系，不用身份分数猜归属。
+
+`HybridSession.update`接收检测列表与尺寸，记录最近真实位置，原轨迹短漏检后须满足位置、帧数和时间约束才能恢复候选进度。`process`提取当前身体/人脸证据，先检查已有绑定，再让未绑定人物竞争唯一目标，输出`Box`的locked/candidate/none及face/body/continuity依据。
+
+`progress_candidate`只给真实过线观测计数，短暂缺失可等待但不凑数；`reset_candidate`处理竞争、矛盾与超时。`remember_confirmed`只在可靠条件下更新有限模板；远处仅登记身体时，走近后需6份互相一致的清晰正脸才能建立第一份脸模板。临时`face_seed`和其他模板都在会话内存，取消、删除和停止清除。
+
+阅读顺序建议：先看[分支说明](branch_testing.md)，再看`Pipeline`的hybrid分支，然后按`update → process → evidence → progress_candidate → remember_confirmed`阅读。下面的`VideoSession`与MobileNet内容解释appearance基础方案，不能把它的所有严格逐帧撤绿规则当成hybrid当前规则。
 
 ## 身份库：gallery.py
 
