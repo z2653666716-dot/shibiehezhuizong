@@ -99,6 +99,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_identity.p
 
 ## 参数与限制
 
+`0.3.6-distance-reentry`增加`remember_body_transition`：当远处手动锁定后还没有人脸模板，允许原连续轨迹把强匹配的中间距离身体外观加入有限模板库。输入是当前身体向量、轨迹连续性和同帧竞争结果，输出是是否具备补脸依据；`remember_confirmed`接着继续累计原六份可靠人脸样本。新轨迹没有这项学习许可，取消、删除和停止清除许可与临时样本。
+
+这修复了“必须先有人脸才能更新身体，但近处身体已不像远景，导致又学不到人脸”的依赖问题。仍保持原0.85强身体门槛，保留最初身体模板并要求其达到0.55维持门槛；旁人未比较、同分竞争、突然变化、轨迹中断或与原模板差异过大时禁止学习。合成回归可验证这些规则，不能据此断言真实距离重入问题已经验收通过。
+
 - `FACE_MATCH_THRESHOLD=0.45`：新的人脸匹配门槛；未用用户现场数据标定。提高更谨慎但可能增加漏认。
 - `BODY_MATCH_THRESHOLD=0.75`、`BODY_HOLD_THRESHOLD=0.55`：新行人模型用于重新确认与连续维持的不同门槛，不与旧MobileNet的0.90直接比较。
 - `IDENTITY_HOLD_SECONDS=2`：可靠观测缺失时最多短暂等待，不能无限沿用旧身份。

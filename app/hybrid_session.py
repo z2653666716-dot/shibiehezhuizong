@@ -36,6 +36,8 @@ class HybridObservation(Observation):
     last_seen_at: float = 0.
     observation_gap: int = 0
     face_seed: object = None
+    # 只有用户手动选中的连续轨迹才能在尚无人脸模板时补充距离变化；重入新轨迹默认无此许可。
+    body_learning_allowed: bool = False
 
 
 class HybridSession(VideoSession):
@@ -95,6 +97,9 @@ class HybridSession(VideoSession):
                                        overlap(box.xyxy, old["last_box"]) > .15 and
                                        (gap == 0 or now - old["last_seen_at"] <= self.config.identity_hold_seconds))
                 track.observation_gap = gap
+                if gap > 2 or (old is not None and not track.motion_ok):
+                    track.body_learning_allowed = False
+                    track.face_learning, track.face_seed = 0, None
                 if gap > 0 and track.motion_ok:
                     track.hits = old["hits"] + 1
                     if old["candidate"]:
@@ -168,8 +173,32 @@ class HybridSession(VideoSession):
                 "motion_ok": bool(track.motion_ok), "observation_gap": track.observation_gap,
                 "score": face_score if mode == "face" else body_score}
 
+    def remember_body_transition(self, key, feature, identity_id, check):
+        """输入当前身体依据，输出是否足以补脸，并谨慎记住过渡距离的身体外观。
+
+        由remember_confirmed调用。仅用户手动选择的原连续轨迹、身体匹配至少0.85且领先旁人时
+        才允许补模板；同时仍须与最初身体达到维持门槛，避免相邻模板无限漂移到另一个人。
+        Gallery.append保留原模板且限制总数，所有向量仅在会话内存。
+        """
+        track = self.observations[key]
+        if self.face_templates.get(identity_id) or feature is None or not self.body_valid.get(identity_id):
+            return False
+        anchor = self.gallery.items[identity_id].templates[0]
+        # 新入镜白框尚无轨迹号/身体特征时，不能把“还没比较”误当成目标已领先。
+        unmeasured_person = any(box.cls == 0 and box.track_id != key
+                                and box.track_id not in self.current_body_features for box in self.boxes)
+        reliable = bool(track.body_learning_allowed and track.motion_ok and track.observation_gap == 0
+                        and check["mode"] == "body" and check["body_score"] >= .85
+                        and check.get("body_unique", False) and not unmeasured_person
+                        and cosine(feature[:512], anchor[:512]) >= self.config.body_hold_threshold)
+        if reliable:
+            # 远景到近景逐步变化时先保留强匹配的过渡外观，不能等已经有人脸才更新身体。
+            # 不降低重入或补脸门槛；突然变化、旁人同分、只有头部和失踪重入均不能借此学习。
+            self.gallery.append(identity_id, feature)
+        return reliable
+
     def remember_confirmed(self, key, feature, identity_id, check):
-        """只用可靠人脸确认过的身体补充模板；无可靠确认时不靠旧轨迹持续学习别人的外观。"""
+        """输入当前身份依据，补充可靠模板；首份人脸之前仅允许手动原轨迹的受限身体过渡。"""
         track = self.observations[key]
         sample = self.current_faces.get(key)
         if check["mode"] in {"face", "body"}:
@@ -193,7 +222,7 @@ class HybridSession(VideoSession):
         if self.face_templates.get(identity_id):
             track.face_learning, track.face_seed = 0, None
             return
-        strong_body = (track.motion_ok and check["body_score"] >= .85 and check.get("body_unique", False))
+        strong_body = self.remember_body_transition(key, feature, identity_id, check)
         if strong_body and sample is not None and sample.feature is not None and sample.reason == "READY":
             if track.face_seed is None or cosine(sample.feature, track.face_seed) < self.config.face_match_threshold:
                 track.face_seed, track.face_learning = sample.feature.copy(), 1
@@ -305,6 +334,8 @@ class HybridSession(VideoSession):
                     self.diagnostic("identity_unbound", track_id=key, identity_id=track.identity_id, check=check)
                     self.events.append({"type": "event", "name": "unbound", "identity_id": track.identity_id})
                     track.identity_id = None
+                    track.body_learning_allowed = False
+                    track.face_learning, track.face_seed = 0, None
                     self.reset_candidate(key, check["reason"])
                 else:
                     claimed.add(track.identity_id)
@@ -397,6 +428,7 @@ class HybridSession(VideoSession):
                 self.face_templates[identity_id] = [sample.feature.copy()]
             self.body_valid[identity_id] = track_id not in self.head_only_ids
             self.observations[track_id].last_verified = monotonic()
+            self.observations[track_id].body_learning_allowed = self.body_valid[identity_id]
         return reply
 
     def clear_lock(self, reason="cancel"):
@@ -408,6 +440,7 @@ class HybridSession(VideoSession):
         for track in self.observations.values():
             if isinstance(track, HybridObservation):
                 track.face_learning, track.face_seed = 0, None
+                track.body_learning_allowed = False
 
     def delete(self, identity_id):
         super().delete(identity_id)
@@ -416,6 +449,7 @@ class HybridSession(VideoSession):
         for track in self.observations.values():
             if isinstance(track, HybridObservation):
                 track.face_learning, track.face_seed = 0, None
+                track.body_learning_allowed = False
 
     def reset(self):
         super().reset()
