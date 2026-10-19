@@ -188,3 +188,46 @@ def test_unique_body_can_wait_briefly_during_face_overlap(monkeypatch):
     assert session.observations[target].last_verified == verified
     monkeypatch.setattr("app.hybrid_session.monotonic", lambda: verified + 3)
     assert all(box.state != "locked" for box in advance(session, frame, 8))
+
+
+def test_distant_body_lock_can_learn_first_face_across_sampling_intervals():
+    """初始只有身体模板，走近后每三帧才提一次脸；跳过的帧不应把六次可靠采样反复清零。"""
+    session = HybridSession(config(), DistinctBodies(), TwoFaces())
+    frame = np.full((160, 320, 3), 100, np.uint8)
+    frame[:, :100], frame[:, 140:] = (200, 40, 20), (20, 40, 200)
+    session.face_encoder.target = None
+    session.face_encoder.reason = "FACE_TOO_SMALL"
+    for seq in range(1, 7):
+        advance(session, frame, seq)
+    target = session.boxes[0].track_id
+    session.lock(target, session.seq, "lock")
+    assert not session.face_templates["ID-01"]
+    session.face_encoder.target = normalize([1., 0.])
+    session.face_encoder.reason = "READY"
+    for seq in range(7, 22):
+        result = advance(session, frame, seq)
+        assert next(box for box in result if box.track_id == target).state == "locked"
+        assert not session.face_templates["ID-01"]  # 前五份可靠采样，间隔帧不能凑数。
+    advance(session, frame, 22)
+    assert len(session.face_templates["ID-01"]) == 1
+    assert session.observations[target].face_seed is None
+
+
+def test_inconsistent_face_learning_does_not_mix_people_and_cancel_clears_seed():
+    """暂存脸样本彼此不一致时重新计数；取消必须清掉尚未登记的临时脸特征。"""
+    session = HybridSession(config(), DistinctBodies(), TwoFaces())
+    frame = np.full((160, 320, 3), 100, np.uint8)
+    frame[:, :100], frame[:, 140:] = (200, 40, 20), (20, 40, 200)
+    session.face_encoder.target = None
+    for seq in range(1, 7):
+        advance(session, frame, seq)
+    target = session.boxes[0].track_id
+    session.lock(target, session.seq, "lock")
+    for seq in range(7, 23):
+        session.face_encoder.target = normalize([1., 0.] if ((seq - 7) // 3) % 2 == 0 else [0., 1.])
+        advance(session, frame, seq)
+    assert not session.face_templates["ID-01"]
+    assert session.observations[target].face_seed is not None
+    assert session.observations[target].face_learning == 1
+    session.clear_lock()
+    assert session.observations[target].face_seed is None

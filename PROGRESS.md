@@ -684,6 +684,15 @@
 - 实际命令：pytest tests/test_hybrid_candidates.py tests/test_hybrid_identity.py tests/test_hybrid_page.py tests/test_tracking_diagnostics.py tests/test_single_target.py --basetemp=work/branches/body -q --disable-warnings --maxfail=1；退出0，28 passed、1 warning，25.68秒。包含真实公开照片页面与两个身体已知向量竞争、等待不延长期限、未知新白框拒绝和取消清理；不含用户实拍。
 - 页面运行版本0.3.4-body-continuity，健康标记body_competition_wait；D的人脸学习修复尚未加入本分支，现场姿态/距离效果留待集中验收。
 
+## 功能分支D：走近后补充人脸（0.3.5-face-enrollment）
+
+- fix/distant-face-enrollment从C的8891ec1派生，包含A/B/C。remember_confirmed累计6份互相一致的清晰正脸，身体须强匹配且领先旁人；每3帧主动跳过前向不再清零，也不当作成功。相互矛盾的人脸重新计数，临时face_seed仅内存，取消、删除和停止清除。
+- 新增真实调度周期的状态检查：前5份可靠脸不能登记，第6份才能补充；交替的不同脸不能混合凑满次数，取消清除临时向量。初版在旧代码上实际复现“永远无法补充人脸”失败后修复，没有调低原门槛。
+- 完整回归首次在33项通过后遇到旧右键测试固定等待原轨迹号；隔离服务实际已成功锁定当前点击位置的新轨迹号。该编号变化来自自动640到480调整触发跟踪重建，按设计允许；修正测试为检查当前命中框，未改业务匹配逻辑。
+- 实际完整命令：pytest tests --basetemp=work/branches/enrollment_release -q --disable-warnings --maxfail=1；退出0，87 passed、1 warning，202.59秒。包含全部功能分支、真实公开照片页面、隐私限制、取消/停止、PWA、模拟录制及打包边界，不使用物理设备，不保存用户媒体。
+- 拆分后的faces.py、hybrid_session.py、候选测试、数值分析与诊断测试均以语法树对比拆分前已检查源码，一致。分支版本改为0.3.5-face-enrollment，页面显示实际后端版本；旧8446保持用户指定基线进程，不声称已升级。
+- A/B/C/D的依赖、输入输出、阅读顺序、参数和最后统一测试项目已写入docs/branch_testing.md与tracking_upgrade.md。用户要求中间无需干预，因此不再发起摄像头复测；真实姿态/远近、重入、交叉及准确率继续待集中验收。
+
 ## 后续功能待验收
 
 - 源码包首次独立解压运行检查通过：77个清单文件摘要一致，包内YOLO与MobileNet实际加载，公开样例检出4人，锁定接口及绿框状态通过，默认录制拒绝，静态/PWA资源可访问，临时服务已关闭；未使用设备、未保存实拍内容。

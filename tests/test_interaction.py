@@ -59,8 +59,14 @@ def test_pointer_lock_and_cancel(viewer):
     assert session.evaluate("lockActions") == ["lock", "unlock"]
     # 真正的电脑鼠标右键仍然可用：等待触摸菜单屏蔽期结束，再发送一次明确右键。
     session.evaluate("new Promise(resolve=>setTimeout(resolve,1600))")
-    session.evaluate("ui.overlay.dispatchEvent(new MouseEvent('contextmenu',{...testPoint,button:2}))")
-    session.wait("ui.boxes.some(b=>b.track_id===chosen&&b.state==='locked')")
+    session.evaluate("""(()=>{
+      const event=new MouseEvent('contextmenu',{...testPoint,button:2});
+      // 慢速完整回归中会触发640到480的自适应调整，轨迹号按设计重建；应锁定当前点击处的框。
+      window.rightClicked=ui.interaction.hit(event)?.track_id;
+      if(rightClicked==null)throw new Error('public sample no longer under test pointer');
+      ui.overlay.dispatchEvent(event);
+    })()""")
+    session.wait("ui.boxes.some(b=>b.track_id===rightClicked&&b.state==='locked')")
     assert session.evaluate("lockActions") == ["lock", "unlock", "lock"]
     session.evaluate("document.getElementById('stop-detection').click()")
     session.wait("ui.state==='idle'")

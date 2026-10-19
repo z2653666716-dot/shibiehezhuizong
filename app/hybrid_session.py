@@ -35,6 +35,7 @@ class HybridObservation(Observation):
     last_box: tuple | None = None
     last_seen_at: float = 0.
     observation_gap: int = 0
+    face_seed: object = None
 
 
 class HybridSession(VideoSession):
@@ -187,14 +188,23 @@ class HybridSession(VideoSession):
                     templates.append(sample.feature.copy())
                     if len(templates) > self.config.reid_max_templates:
                         del templates[1]
-        # 远处登记时脸太小：必须连续6次有很强的行人证据与唯一脸归属，才补充第一份人脸模板。
-        if not self.face_templates.get(identity_id) and sample is not None and sample.feature is not None and track.motion_ok and check["body_score"] >= .85:
-            track.face_learning += 1
+        # 远处登记时脸太小：走近后仍需6份互相一致的清晰正脸，身体还须明显领先旁人。
+        # 每三帧主动跳过的前向不代表观测失败；这些帧既不加次数，也不抹掉先前的可靠采样。
+        if self.face_templates.get(identity_id):
+            track.face_learning, track.face_seed = 0, None
+            return
+        strong_body = (track.motion_ok and check["body_score"] >= .85 and check.get("body_unique", False))
+        if strong_body and sample is not None and sample.feature is not None and sample.reason == "READY":
+            if track.face_seed is None or cosine(sample.feature, track.face_seed) < self.config.face_match_threshold:
+                track.face_seed, track.face_learning = sample.feature.copy(), 1
+            else:
+                track.face_learning += 1
             if track.face_learning >= 6:
-                self.face_templates[identity_id] = [sample.feature.copy()]
+                self.face_templates[identity_id] = [track.face_seed.copy()]
+                track.face_seed, track.face_learning = None, 0
                 self.diagnostic("face_enrolled_after_body_confirmation", identity_id=identity_id, track_id=key)
-        else:
-            track.face_learning = 0
+        elif not (strong_body and sample is not None and sample.reason == "FACE_OBSERVATION_INTERVAL"):
+            track.face_learning, track.face_seed = 0, None
 
     def reset_candidate(self, track_id, reason):
         """清除某轨迹的确认进度并记下原因；不删除已经登记的人脸/身体模板。"""
@@ -395,11 +405,17 @@ class HybridSession(VideoSession):
         self.body_valid.clear()
         self.current_body_features.clear()
         self.unknown_body_overlap.clear()
+        for track in self.observations.values():
+            if isinstance(track, HybridObservation):
+                track.face_learning, track.face_seed = 0, None
 
     def delete(self, identity_id):
         super().delete(identity_id)
         self.face_templates.pop(identity_id, None)
         self.body_valid.pop(identity_id, None)
+        for track in self.observations.values():
+            if isinstance(track, HybridObservation):
+                track.face_learning, track.face_seed = 0, None
 
     def reset(self):
         super().reset()
