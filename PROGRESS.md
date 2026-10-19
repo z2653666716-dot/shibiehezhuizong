@@ -703,6 +703,14 @@
 - README、delivery_guide、code_guide及branch_testing同步当前hybrid能力、单目标规则、照片特写支持、功能依赖、真实后端版本显示与集中启动方式，区分appearance旧规则与hybrid新规则。源码ZIP只包含当前完整代码，不携带所有分支Git历史，所有分支从GitHub获取。
 - 源码包及独立解压运行结果将在outputs/delivery单独保留；它们只含源码、允许分发模型与指定公开样例，排除环境、私有证书、.env、work/备份、运行结果和实拍内容。论文/报告正文、最终实拍视频与真实课程资料仍按原方案人工范围准备。
 
+## 完整功能源码包验收与分支交付
+
+- 当前完整包：outputs/delivery/vitrack_complete_features.zip，对应源码提交8b668387cabdbcff3558dc9e756742bba62deefc，运行版本0.3.5-face-enrollment、hybrid模式，打包时工作区干净。98份清单文件，原始文件81,626,727字节，ZIP为75,255,368字节；SHA256为27879c309d1efa33df885eace1e720de27b276f65b62e111c4b637a81d6d0e34。此后仅补充交付文档，不重复打包，不改变包内算法。
+- 实际打包命令：.\envs\vitrack\python.exe -X utf8 scripts/package_source.py --identity-mode hybrid --output outputs/delivery/vitrack_complete_features.zip；退出0。生成报告outputs/delivery/vitrack_complete_features.json。
+- 实际验收命令：.\envs\vitrack\python.exe -X utf8 scripts/verify_package.py outputs/delivery/vitrack_complete_features.zip --identity-mode hybrid --report outputs/delivery/complete_features_check.json；退出0，status=passed。独立解压到work/package_checks/61ee137705be45e38525a535ebeccc4f/vitrack后，98份摘要及真实运行版本吻合，YOLO/OSNet/人脸模型加载，公开样例检出4人，锁定与绿框、默认保存拒绝、静态资源通过，临时服务已退出。
+- 复用现有Python环境，未做新机安装，不使用物理设备，不保存用户媒体；手机姿态/距离/交叉/重入效果与性能仍待用户集中验收。87项完整回归与9项交付检查分别记录，不把重叠检查合计为96项不同测试。
+- 已核对远程基线2b6ea26及固定标签、A的7c24f6b、B的3b23a6a、C的8891ec1、D的23f9647和交付提交8b66838；均已推送。main仍为c4e80da，未自动合入实验。依赖顺序为基线→A→B→C→D→交付，集中测试说明见docs/branch_testing.md。
+
 ## 后续功能待验收
 
 - 源码包首次独立解压运行检查通过：77个清单文件摘要一致，包内YOLO与MobileNet实际加载，公开样例检出4人，锁定接口及绿框状态通过，默认录制拒绝，静态/PWA资源可访问，临时服务已关闭；未使用设备、未保存实拍内容。

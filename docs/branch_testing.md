@@ -93,3 +93,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_identity.p
 ## 阅读顺序和参数
 
 先读本文件了解分支，再读`tracking_upgrade.md`理解身份流程，最后看当前分支的源码和对应测试。程序入口仍为`app/main.py`，实验启动入口为`scripts/run_identity.ps1`。本次拆分不调整人脸/身体匹配门槛，保持默认参数，便于集中比较每项修改的影响。
+
+## 源码包与已完成的自动检查
+
+- 完整源码包：`outputs/delivery/vitrack_complete_features.zip`，对应交付分支提交`8b668387cabdbcff3558dc9e756742bba62deefc`，运行版本`0.3.5-face-enrollment`、身份模式`hybrid`。后续文档收尾提交不改变该包内算法。
+- 包内98份清单文件，ZIP为75,255,368字节；SHA256为`27879c309d1efa33df885eace1e720de27b276f65b62e111c4b637a81d6d0e34`。源码包不包含Git历史；各功能版本请从GitHub分支获取。
+- `scripts/verify_package.py`独立解压后实际启动，98份文件摘要一致，公开样例检出4人，锁定接口与绿框、默认禁止保存、静态资源检查通过，临时服务已停止。结果为`outputs/delivery/complete_features_check.json`。
+- 本次复用项目现有Python环境，不是全新电脑安装验收；未使用物理摄像头，未保存用户媒体。新版本的真实姿态、距离、交叉、重入和手机性能仍待最后集中测试。
+- 已核对基线、A/B/C/D及交付分支的远程引用，均已推送；`main`保持`c4e80da`，未合入这些新实验功能。完整回归为87项通过，交付相关检查另有9项通过，两次检查存在重叠，不合计为96项不同测试。
