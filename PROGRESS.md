@@ -7,6 +7,7 @@
 ## 当前状态
 
 - 日期：2026-10-19。
+- 当前收尾基线：用户要求新建baseline分支收拢已测试功能，已从fix/distance-reentry的2c2f82c建立baseline/tested-v0.3.6，运行版本仍为0.3.6-distance-reentry。完整包含A/B/C/D及距离重入修复；保留原baseline/user-tested-v0.3.1、各功能分支和main。本次只更新文档/协作约定，不修改软件代码或匹配参数；固定标签v0.3.6-tested-baseline用于保留整合快照。
 - 最新集中测试：A/B文字反馈良好；C提示被用户明确更正为“跟踪中”，不记为反复识别中；D存在远处登记后近处重入失败，近处登记正常。修复分支fix/distance-reentry（从D的23f9647派生），版本0.3.6-distance-reentry，在单独取得最多5分钟授权后完成现场复测，用户确认“测试完成没有上一版的问题了”，并确认停止、摄像头提示结束。仅记本轮场景通过，不扩大为全部身份效果验收；main未合并。
 - 用户指定开发基线：原8446的0.3.1-experimental，提交2b6ea26，固定于baseline/user-tested-v0.3.1和v0.3.1-user-baseline。后续按功能依次派生分支、连续自动检查；用户最后集中现场验收，再决定合并。各版本关系和启动方法见docs/branch_testing.md。
 - 当前大阶段：P0/P1/P2 已有阶段提交；P3 锁定实现提交168cb8e，P4外观库实现提交ceb8cb2，P5照片实现提交58d958d。P6录制/PWA/基准与P7源码交付工具已实现；最后核对与解压运行结果见outputs/acceptance、outputs/delivery。现场ReID与安卓安装未验收，不能把实现完成写成全部实拍通过。
@@ -24,6 +25,13 @@
 - 首轮安全检查暴露新白框暂无线索时被忽略的问题，已补充“其他人物均须有可比较身体”的条件。针对距离重入、渐变漂移上限、同分竞争、突然变化、消失后新轨迹无学习许可及原混合身份/单目标检查，30 passed，11.24秒。未降低身份匹配门槛，未保存或外传媒体/特征。
 - 完整命令：.\envs\vitrack\python.exe -X utf8 -m pytest tests --basetemp=work/branches/distance_release -q --disable-warnings --maxfail=1；退出0，91 passed、3 warnings，240.84秒。compileall及git diff --check通过。30项针对检查与91项完整检查有重叠，不合计为121项不同测试；未访问物理设备。新分支现场效果待复测，原D版、固定基线和main均保留，旧0.3.5源码包不包含本修复。
 - 后续现场复测已完成：单独取得本次最多5分钟单人手机摄像头授权，启动并核对0.3.6-distance-reentry、hybrid模式、禁止保存。用户按“远处锁定→逐步走近→停留→离开→近处重入”操作后反馈“ok测试完成没有上一版的问题了”，随后确认停止、摄像头提示结束。本次已出现1次face_enrolled_after_body_confirmation及3次identity_confirmed，和用户反馈一并保留为有限证据，不据计数推算准确率或恢复耗时；上述“待复测”状态以本条为更新。原8450测试服务已关闭，未开启新一轮测试。
+
+## 收尾基线整合
+
+- merge-base逐一确认原0.3.1基线与A/B/C/D均为2c2f82c的祖先，因此从该提交建立新分支即可保留完整功能及历史，不需要重复复制算法或将旧实现反向覆盖进来。
+- 新基线仅同步AGENTS、README、branch_testing、delivery_guide和本进度说明；统一hybrid启动入口，纠正旧文档“尚不支持人脸特写”等过期说法。app/web/tests/scripts保持2c2f82c的软件内容；91项自动检查和本轮有限现场反馈沿用原始记录，不宣称又运行了一次全套测试。
+- 实际核对：git diff --exit-code 2c2f82c -- app web tests scripts requirements.txt .env.example返回0，软件内容无差异；git diff --check通过；run_identity.ps1 -Mode pc -Port 8450 -CheckOnly返回ok=True、source=ws。只检查启动计划，未启动服务或访问摄像头。
+- 下一步收尾范围：把交付工具分支已验证的hybrid模型/版本清单改进带到新基线，再生成0.3.6源码包并独立解压验收。既有0.3.5源码包不包含最新修复；论文/报告/最终实拍视频等仍按原方案人工范围准备，不能把分支建立当作全部课程材料已交付。
 
 ## 已完成：保存项目规则
 
