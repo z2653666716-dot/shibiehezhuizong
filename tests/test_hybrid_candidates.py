@@ -5,6 +5,7 @@
 from time import monotonic
 
 import numpy as np
+import pytest
 
 from app.faces import FaceEncoder, FaceSample
 from app.hybrid_session import HybridSession
@@ -21,20 +22,22 @@ class TwoFaces:
         self.target = normalize([1., 0.])
         self.other = normalize([0., 1.])
         self.reason = "READY"
+        self.target_visible = True
 
     def read(self, frame, recognize=True):
-        return [
+        faces = [
             FaceSample((40, 15, 60, 45), self.target if recognize else None,
                        self.reason if recognize else "FACE_OBSERVATION_INTERVAL", .99),
             FaceSample((180, 15, 200, 45), self.other if recognize else None,
                        "READY" if recognize else "FACE_OBSERVATION_INTERVAL", .99),
         ]
+        return faces if self.target_visible else faces[1:]
 
 
-def advance(session, frame, seq):
+def advance(session, frame, seq, boxes=None):
     """两个身体框相交但脸分别在不重叠区域；经过真实prepare/update/process流程返回框。"""
-    detections = [Detection(cls=0, name="person", score=.95, xyxy=coords)
-                  for coords in [(20., 10., 140., 150.), (100., 10., 220., 150.)]]
+    coordinates = [(20., 10., 140., 150.), (100., 10., 220., 150.)] if boxes is None else boxes
+    detections = [Detection(cls=0, name="person", score=.95, xyxy=coords) for coords in coordinates]
     detections = session.prepare_frame(frame, detections)
     session.update(detections, frame.shape[1], frame.shape[0], frame)
     return session.process(frame, seq)
@@ -137,3 +140,23 @@ def test_competing_faces_and_elapsed_gap_cannot_use_old_progress(monkeypatch):
     monkeypatch.setattr("app.hybrid_session.monotonic", lambda: previous + 3)
     assert all(box.state != "locked" for box in advance(session, frame, 14))
     assert session.observations[target].candidate_hits == 0
+
+
+@pytest.mark.parametrize("missing_count", [1, 2, 3])
+def test_brief_missing_track_keeps_only_recent_actual_confirmation(missing_count):
+    """短漏检回来仍需原六份证据；超过两帧的断点不得复用五次旧候选。"""
+    session, frame = stable_scene()
+    session.register_identity(body_vector(), face_feature=normalize([1., 0.]))
+    target = session.boxes[0].track_id
+    for seq in range(7, 12):
+        advance(session, frame, seq)
+    assert session.observations[target].candidate_hits == 5
+    session.face_encoder.target_visible = False
+    for offset in range(missing_count):
+        advance(session, frame, 12 + offset, [(100., 10., 220., 150.)])
+    session.face_encoder.target_visible = True
+    result = advance(session, frame, 12 + missing_count)
+    if missing_count <= 2:
+        assert any(box.track_id == target and box.state == "locked" for box in result)
+    else:
+        assert all(box.state != "locked" for box in result)

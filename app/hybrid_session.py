@@ -32,6 +32,9 @@ class HybridObservation(Observation):
     candidate_start_frame: int = 0
     candidate_last_positive: float = 0.
     candidate_gaps: int = 0
+    last_box: tuple | None = None
+    last_seen_at: float = 0.
+    observation_gap: int = 0
 
 
 class HybridSession(VideoSession):
@@ -70,8 +73,11 @@ class HybridSession(VideoSession):
         return output
 
     def update(self, detections, width, height, frame=None):
-        """先由BoT-SORT关联，再记录是否连续且位置连贯；尺寸变化或缺帧不会直接继承身份。"""
-        old = {box.track_id: box.xyxy for box in self.boxes}
+        """先关联，再检查最近真实位置；仅原轨迹短漏检、位置连贯且未超时才保留进度。"""
+        fields = ("last_frame", "last_box", "last_seen_at", "hits", "candidate", "candidate_hits",
+                  "candidate_start_frame", "candidate_last_positive", "candidate_gaps")
+        previous = {key: {name: getattr(track, name, 0) for name in fields}
+                    for key, track in self.observations.items()} if self.size == (width, height) else {}
         boxes = super().update(detections, width, height, frame)
         self.face_only_ids = {box.track_id for index, box in enumerate(boxes) if index in self.face_only_indices and box.track_id is not None}
         for key, track in list(self.observations.items()):
@@ -80,7 +86,20 @@ class HybridSession(VideoSession):
         for box in boxes:
             if box.track_id is not None:
                 track = self.observations[box.track_id]
-                track.motion_ok = track.hits > 1 and box.track_id in old and overlap(box.xyxy, old[box.track_id]) > .15
+                old, now = previous.get(box.track_id), monotonic()
+                gap = self.frame_count - old["last_frame"] - 1 if old else 0
+                track.motion_ok = bool(old and old["last_box"] and gap <= 2 and
+                                       overlap(box.xyxy, old["last_box"]) > .15 and
+                                       (gap == 0 or now - old["last_seen_at"] <= self.config.identity_hold_seconds))
+                track.observation_gap = gap
+                if gap > 0 and track.motion_ok:
+                    track.hits = old["hits"] + 1
+                    if old["candidate"]:
+                        # 漏掉的帧只占等待额度，不能增加可靠成功次数；之后还会经过当前人脸/多人竞争检查。
+                        for name in ("candidate", "candidate_hits", "candidate_start_frame", "candidate_last_positive"):
+                            setattr(track, name, old[name])
+                        track.candidate_gaps = old["candidate_gaps"] + gap
+                track.last_box, track.last_seen_at = box.xyxy, now
         return boxes
 
     def body_score(self, feature, identity_id):
@@ -133,6 +152,7 @@ class HybridSession(VideoSession):
                 "face_quality": sample.reason if sample is not None else "NO_FACE",
                 "face_threshold": self.config.face_match_threshold, "body_threshold": self.config.body_match_threshold,
                 "body_hold_threshold": self.config.body_hold_threshold,
+                "motion_ok": bool(track.motion_ok), "observation_gap": track.observation_gap,
                 "score": face_score if mode == "face" else body_score}
 
     def remember_confirmed(self, key, feature, identity_id, check):
@@ -183,6 +203,8 @@ class HybridSession(VideoSession):
         window = max(self.config.reid_confirm_frames * 2, self.config.reid_confirm_frames + 2)
         if track.candidate is not None and self.frame_count - track.candidate_start_frame >= window:
             self.reset_candidate(track_id, "CONFIRMATION_WINDOW_EXPIRED")
+        if track.candidate is not None and track.candidate_gaps > 2:
+            self.reset_candidate(track_id, "OBSERVATION_GAP_LIMIT")
         # 只有通过原有人脸/身体门槛的当前帧才能计数，不能用连续运动猜测凑满六次。
         if check is not None and check["accepted"]:
             if track.candidate != identity_id:

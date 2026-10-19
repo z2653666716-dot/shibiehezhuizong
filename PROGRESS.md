@@ -669,6 +669,13 @@
 - 自动检查：tests/test_face_association.py及test_hybrid_identity.py共10项通过；同次执行的页面fixture因work/branches父目录尚未建立而中断，已建立项目内临时父目录，单独执行pytest tests/test_hybrid_page.py tests/test_pwa.py --basetemp=work/branches/face_browser -q --disable-warnings --maxfail=1，2 passed、1 warning，22.11秒。合计12项实际检查通过，包含真实公开照片登记与版本显示、隔离Edge及PWA，不使用物理设备。
 - 中间源码备份和拆分脚本仅位于忽略的work/feature_split，另有命名stash保存拆分前已检查的完整工作；不混入源码交付或上传用户媒体。当前分支仅包含A及必要版本/文档配套，B/C/D尚未提交至本分支。
 
+## 功能分支B：短时轨迹恢复（0.3.3-track-recovery）
+
+- fix/brief-track-recovery从A的7c24f6b派生，包含A。hybrid_session.py增加最近真实框、时间、缺帧数；update仅在同轨迹、最多2帧漏检、位置IoU仍大于0.15且缺帧时间不超原2秒期限时恢复进度，后续仍检查当前人脸/多人竞争。缺帧不计作成功，也不画不存在目标的预测框。
+- progress_candidate把先前缺失与本次漏检额度合计，超过2帧重新确认；长时间消失、新轨迹及真实异人脸不能继承旧进度。当前版本健康标记brief_track_recovery，页面版本0.3.3-track-recovery；尚不包含C/D的身体等待或人脸学习修复。
+- 实际命令：pytest tests/test_hybrid_candidates.py tests/test_hybrid_identity.py tests/test_tracker.py --basetemp=work/branches/track -q --disable-warnings --maxfail=1；退出0，22 passed，11.08秒。新增1/2/3帧缺失参数检查，保留真实公开模型缩放与身份取消检查；无物理设备输入。
+- 文档记录当前分支新增函数、输入/输出、依赖和待集中观察项。没有重启旧服务，也不要求用户中途摄像头实测。
+
 ## 后续功能待验收
 
 - 源码包首次独立解压运行检查通过：77个清单文件摘要一致，包内YOLO与MobileNet实际加载，公开样例检出4人，锁定接口及绿框状态通过，默认录制拒绝，静态/PWA资源可访问，临时服务已关闭；未使用设备、未保存实拍内容。
